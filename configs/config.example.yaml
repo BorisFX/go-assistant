@@ -1,0 +1,47 @@
+mode: server  # server | local
+
+telegram:
+  token: ${TELEGRAM_TOKEN}
+  owner_id: 123456789
+  stream_mode: "partial"
+  polling_watchdog_timeout: 120s
+  debounce_delay: 500ms
+  media_group_window: 500ms
+
+llm:
+  chat:
+    provider: openrouter
+    model: "deepseek/deepseek-v4-flash"
+    fallback: "deepseek/deepseek-v4-pro"
+    api_key: ${OPENROUTER_KEY}
+  embedding:
+    provider: openrouter
+    model: "openai/text-embedding-3-small"
+
+database:
+  host: localhost
+  port: 5432
+  name: assistant
+  user: assistant
+  password: ${DB_PASSWORD}
+
+search:
+  searxng_url: "http://localhost:8888"
+
+trading:
+  cryptoai_url: "http://localhost:5154"
+  cryptoai_key: ${CRYPTOAI_KEY}
+  poll_interval: 5m
+
+budget:
+  monthly_limit: 5.00
+  alert_threshold: 0.8
+
+dashboard:
+  port: 8080
+  api_key: ${DASHBOARD_KEY}
+  domain: "assistant.khmertech.dev"
+
+code:
+  binary: "claude"
+  default_dir: "~/Programming"
