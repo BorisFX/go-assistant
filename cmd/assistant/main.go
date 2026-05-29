@@ -111,7 +111,11 @@ func main() {
 		cfg.LLM.Embedding.Model,
 		"",
 	)
-	memorySvc := memory.NewService(memoryRepo, embeddingClient)
+	memorySvc := memory.NewService(memoryRepo, embeddingClient, memory.ServiceConfig{
+		SimilarityThreshold: cfg.Memory.SimilarityThreshold,
+		DedupThreshold:      cfg.Memory.DedupThreshold,
+		TopK:                cfg.Memory.WorkingMemoryResults,
+	})
 
 	// System prompt
 	systemPrompt := defaultSystemPrompt

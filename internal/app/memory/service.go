@@ -10,16 +10,31 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
+type ServiceConfig struct {
+	SimilarityThreshold float64
+	DedupThreshold      float64
+	TopK                int
+	FactLimit           int
+	SummaryDays         int
+}
+
 type Service struct {
 	repo     output.MemoryRepository
 	embedder output.EmbeddingProvider
+	cfg      ServiceConfig
 }
 
-func NewService(repo output.MemoryRepository, embedder output.EmbeddingProvider) *Service {
-	return &Service{
-		repo:     repo,
-		embedder: embedder,
+func NewService(repo output.MemoryRepository, embedder output.EmbeddingProvider, cfg ServiceConfig) *Service {
+	if cfg.TopK == 0 {
+		cfg.TopK = 5
 	}
+	if cfg.FactLimit == 0 {
+		cfg.FactLimit = 10
+	}
+	if cfg.SummaryDays == 0 {
+		cfg.SummaryDays = 7
+	}
+	return &Service{repo: repo, embedder: embedder, cfg: cfg}
 }
 
 func (s *Service) StoreFact(ctx context.Context, content, source string, tags []string) error {
@@ -30,6 +45,15 @@ func (s *Service) StoreFact(ctx context.Context, content, source string, tags []
 		slog.Warn("failed to generate embedding, storing without", "error", err)
 	} else {
 		mem.Embedding = embedding
+		if s.cfg.DedupThreshold > 0 {
+			similar, serr := s.repo.SearchSimilarScored(ctx, embedding, entity.MemoryFact, 1)
+			if serr != nil {
+				slog.Warn("dedup search failed", "error", serr)
+			} else if len(similar) > 0 && similar[0].Distance < s.cfg.DedupThreshold {
+				slog.Info("skipping duplicate fact", "content", content, "distance", similar[0].Distance)
+				return nil
+			}
+		}
 	}
 
 	return s.repo.Store(ctx, mem)
@@ -59,17 +83,23 @@ func (s *Service) BuildContext(ctx context.Context, query string) (string, error
 		return "", fmt.Errorf("embed query: %w", err)
 	}
 
-	similar, err := s.repo.SearchSimilar(ctx, embedding, 5)
+	scored, err := s.repo.SearchSimilarScored(ctx, embedding, "", s.cfg.TopK)
 	if err != nil {
 		return "", fmt.Errorf("search similar: %w", err)
 	}
+	var similar []*entity.Memory
+	for _, sm := range scored {
+		if s.cfg.SimilarityThreshold <= 0 || sm.Distance < s.cfg.SimilarityThreshold {
+			similar = append(similar, sm.Memory)
+		}
+	}
 
-	facts, err := s.repo.GetByType(ctx, entity.MemoryFact, 10)
+	facts, err := s.repo.GetByType(ctx, entity.MemoryFact, s.cfg.FactLimit)
 	if err != nil {
 		slog.Warn("failed to get facts", "error", err)
 	}
 
-	summaries, err := s.repo.GetRecentSummaries(ctx, 7)
+	summaries, err := s.repo.GetRecentSummaries(ctx, s.cfg.SummaryDays)
 	if err != nil {
 		slog.Warn("failed to get summaries", "error", err)
 	}
