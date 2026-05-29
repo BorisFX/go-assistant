@@ -36,8 +36,10 @@ func (e *Extractor) Extract(ctx context.Context, convID uuid.UUID) error {
 		return fmt.Errorf("list messages: %w", err)
 	}
 
+	// ListMessages returns newest-first; iterate in reverse for chronological order.
 	var transcript []string
-	for _, msg := range messages {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
 		if msg.Role == entity.RoleUser || msg.Role == entity.RoleAssistant {
 			transcript = append(transcript, fmt.Sprintf("[%s] %s", msg.Role, msg.Content))
 		}
