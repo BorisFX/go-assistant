@@ -8,12 +8,18 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
 )
 
+type ScoredMemory struct {
+	Memory   *entity.Memory
+	Distance float64
+}
+
 type MemoryRepository interface {
 	Store(ctx context.Context, memory *entity.Memory) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entity.Memory, error)
 	Update(ctx context.Context, memory *entity.Memory) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	SearchSimilar(ctx context.Context, embedding []float32, limit int) ([]*entity.Memory, error)
+	SearchSimilarScored(ctx context.Context, embedding []float32, memType entity.MemoryType, limit int) ([]ScoredMemory, error)
 	GetByTags(ctx context.Context, tags []string, limit int) ([]*entity.Memory, error)
 	GetByType(ctx context.Context, memType entity.MemoryType, limit int) ([]*entity.Memory, error)
 	GetRecentSummaries(ctx context.Context, days int) ([]*entity.Memory, error)

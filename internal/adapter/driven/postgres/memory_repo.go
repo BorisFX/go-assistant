@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
 type MemoryRepo struct {
@@ -78,6 +79,39 @@ func (r *MemoryRepo) SearchSimilar(ctx context.Context, embedding []float32, lim
 		return nil, err
 	}
 	return scanMemories(rows)
+}
+
+func (r *MemoryRepo) SearchSimilarScored(ctx context.Context, embedding []float32, memType entity.MemoryType, limit int) ([]output.ScoredMemory, error) {
+	embStr := formatVector(embedding)
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, type, content, tags, source, created_at, expires_at, embedding <=> $1::vector AS distance
+		 FROM memories
+		 WHERE embedding IS NOT NULL AND ($2 = '' OR type = $2)
+		 ORDER BY embedding <=> $1::vector
+		 LIMIT $3`,
+		embStr, string(memType), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []output.ScoredMemory
+	for rows.Next() {
+		var m entity.Memory
+		var expiresAt sql.NullTime
+		var distance float64
+		if err := rows.Scan(&m.ID, &m.Type, &m.Content, pq.Array(&m.Tags), &m.Source, &m.CreatedAt, &expiresAt, &distance); err != nil {
+			return nil, err
+		}
+		if expiresAt.Valid {
+			m.ExpiresAt = &expiresAt.Time
+		}
+		mem := m
+		results = append(results, output.ScoredMemory{Memory: &mem, Distance: distance})
+	}
+	return results, rows.Err()
 }
 
 func (r *MemoryRepo) GetByTags(ctx context.Context, tags []string, limit int) ([]*entity.Memory, error) {
