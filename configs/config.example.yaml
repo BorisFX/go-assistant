@@ -45,3 +45,9 @@ dashboard:
 code:
   binary: "claude"
   default_dir: "~/Programming"
+
+memory:
+  fact_extraction_interval: 6          # extract facts every N messages
+  extraction_model: "deepseek/deepseek-v4-flash"
+  similarity_threshold: 0.45           # max cosine distance for RAG matches
+  dedup_threshold: 0.15                # skip facts nearer than this to an existing one

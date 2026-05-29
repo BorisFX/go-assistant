@@ -96,6 +96,11 @@ type MemoryConfig struct {
 	MaxContextTokens     int           `yaml:"max_context_tokens"`
 	RetentionDays        int           `yaml:"retention_days"`
 	SummarizeInterval    time.Duration `yaml:"summarize_interval"`
+
+	FactExtractionInterval int     `yaml:"fact_extraction_interval"`
+	ExtractionModel        string  `yaml:"extraction_model"`
+	SimilarityThreshold    float64 `yaml:"similarity_threshold"`
+	DedupThreshold         float64 `yaml:"dedup_threshold"`
 }
 
 func Load(path string) (*Config, error) {
@@ -163,5 +168,17 @@ func (c *Config) setDefaults() {
 	}
 	if c.Memory.SummarizeInterval == 0 {
 		c.Memory.SummarizeInterval = 5 * time.Minute
+	}
+	if c.Memory.FactExtractionInterval == 0 {
+		c.Memory.FactExtractionInterval = 6
+	}
+	if c.Memory.ExtractionModel == "" {
+		c.Memory.ExtractionModel = "deepseek/deepseek-v4-flash"
+	}
+	if c.Memory.SimilarityThreshold == 0 {
+		c.Memory.SimilarityThreshold = 0.45
+	}
+	if c.Memory.DedupThreshold == 0 {
+		c.Memory.DedupThreshold = 0.15
 	}
 }
