@@ -115,7 +115,10 @@ func main() {
 		SimilarityThreshold: cfg.Memory.SimilarityThreshold,
 		DedupThreshold:      cfg.Memory.DedupThreshold,
 		TopK:                cfg.Memory.WorkingMemoryResults,
+		FactLimit:           10,
+		SummaryDays:         7,
 	})
+	factExtractor := memory.NewExtractor(memorySvc, messageRepo, llmClient, cfg.Memory.ExtractionModel, cfg.Memory.FactExtractionInterval)
 
 	// System prompt
 	systemPrompt := defaultSystemPrompt
@@ -133,7 +136,7 @@ func main() {
 	classifier := chat.NewRuleClassifier()
 	toolLoop := chat.NewToolLoop(registry, 10)
 	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop)
-	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, systemPrompt)
+	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
 	// Cron scheduler (SendFunc will be set after bot is created)
 	cronRepo := postgres.NewCronRepo(db)
@@ -209,7 +212,7 @@ func main() {
 	}()
 
 	// Daily summarizer
-	summarizer := memory.NewSummarizer(memorySvc, messageRepo, llmClient, cfg.Memory.SummarizeInterval)
+	summarizer := memory.NewSummarizer(memorySvc, messageRepo, llmClient, cfg.Memory.SummarizeInterval, cfg.Memory.RetentionDays)
 	go summarizer.Run(ctx)
 
 	// Cron scheduler

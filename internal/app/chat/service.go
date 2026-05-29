@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
@@ -16,7 +19,11 @@ type Service struct {
 	messageRepo  output.MessageRepository
 	activityRepo output.ActivityRepository
 	memorySvc    *memory.Service
+	extractor    *memory.Extractor
 	systemPrompt string
+
+	mu        sync.Mutex
+	msgCounts map[uuid.UUID]int
 }
 
 func NewService(
@@ -24,6 +31,7 @@ func NewService(
 	messageRepo output.MessageRepository,
 	activityRepo output.ActivityRepository,
 	memorySvc *memory.Service,
+	extractor *memory.Extractor,
 	systemPrompt string,
 ) *Service {
 	return &Service{
@@ -32,6 +40,8 @@ func NewService(
 		messageRepo:  messageRepo,
 		activityRepo: activityRepo,
 		memorySvc:    memorySvc,
+		extractor:    extractor,
+		msgCounts:    make(map[uuid.UUID]int),
 	}
 }
 
@@ -97,6 +107,26 @@ func (s *Service) ProcessMessage(ctx context.Context, req input.ChatRequest) (*i
 	assistantMsg := entity.NewMessage(conv.ID, entity.RoleAssistant, resp.Content)
 	if err := s.messageRepo.SaveMessage(ctx, assistantMsg); err != nil {
 		slog.Error("failed to save assistant message", "error", err)
+	}
+
+	if s.extractor != nil {
+		s.mu.Lock()
+		s.msgCounts[conv.ID] += 2 // user + assistant
+		trigger := s.msgCounts[conv.ID] >= s.extractor.Interval()
+		if trigger {
+			s.msgCounts[conv.ID] = 0
+		}
+		s.mu.Unlock()
+
+		if trigger {
+			go func(id uuid.UUID) {
+				bg, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err := s.extractor.Extract(bg, id); err != nil {
+					slog.Warn("realtime fact extraction failed", "error", err)
+				}
+			}(conv.ID)
+		}
 	}
 
 	if s.activityRepo != nil {
