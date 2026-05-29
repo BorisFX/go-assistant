@@ -21,6 +21,9 @@ type Config struct {
 	Memory       MemoryConfig `yaml:"memory"`
 	SystemPrompt string       `yaml:"system_prompt_file"`
 	MailRu       MailRu       `yaml:"mailru"`
+	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
+	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
+	Timezone string `yaml:"timezone"`
 }
 
 type MailRu struct {
@@ -123,6 +126,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) setDefaults() {
 	if c.Mode == "" {
 		c.Mode = "server"
+	}
+	if c.Timezone == "" {
+		c.Timezone = "UTC"
 	}
 	if c.Telegram.StreamMode == "" {
 		c.Telegram.StreamMode = "partial"

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
@@ -40,7 +41,7 @@ RULES:
 - When doing multi-step tasks, report progress after each step.
 - Default language: Russian. Switch to English for code or if asked.
 
-TOOLS: search_web (internet search), bash (server commands), trading_status (CryptoAI), run_code (Claude Code CLI).`
+TOOLS: search_web (internet search), bash (server commands), trading_status (CryptoAI), run_code (Claude Code CLI), manage_cron (schedule recurring tasks for yourself).`
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
@@ -138,6 +139,13 @@ func main() {
 	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop)
 	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
+	// Timezone for clock-time cron schedules ("daily at 09:00").
+	cronLoc, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		slog.Warn("invalid timezone, falling back to UTC", "timezone", cfg.Timezone, "error", err)
+		cronLoc = time.UTC
+	}
+
 	// Cron scheduler (SendFunc will be set after bot is created)
 	cronRepo := postgres.NewCronRepo(db)
 	var cronSendFunc cronpkg.SendFunc
@@ -145,7 +153,10 @@ func main() {
 		if cronSendFunc != nil {
 			cronSendFunc(text)
 		}
-	})
+	}, cronLoc)
+
+	// Let the assistant manage its own scheduled tasks.
+	registry.Register(builtin.NewManageCron(cronScheduler, cronLoc))
 
 	// Telegram bot
 	bot, err := telegram.NewBot(

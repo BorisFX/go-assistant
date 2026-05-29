@@ -1,5 +1,8 @@
 mode: server  # server | local
 
+# IANA timezone for clock-time cron schedules like "daily at 09:00".
+timezone: "UTC"
+
 telegram:
   token: ${TELEGRAM_TOKEN}
   owner_id: 123456789

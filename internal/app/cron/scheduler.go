@@ -21,15 +21,23 @@ type Scheduler struct {
 	repo        output.CronRepository
 	chatService input.ChatService
 	send        SendFunc
+	loc         *time.Location
 }
 
-func NewScheduler(repo output.CronRepository, chatService input.ChatService, send SendFunc) *Scheduler {
+func NewScheduler(repo output.CronRepository, chatService input.ChatService, send SendFunc, loc *time.Location) *Scheduler {
+	if loc == nil {
+		loc = time.UTC
+	}
 	return &Scheduler{
 		repo:        repo,
 		chatService: chatService,
 		send:        send,
+		loc:         loc,
 	}
 }
+
+// Location returns the timezone used to anchor clock-time schedules.
+func (s *Scheduler) Location() *time.Location { return s.loc }
 
 func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
@@ -69,7 +77,11 @@ func (s *Scheduler) tick(ctx context.Context) {
 			s.send(fmt.Sprintf("Cron [%s]:\n%s", job.Name, resp.Content))
 		}
 
-		nextRun := time.Now().Add(time.Duration(job.IntervalSeconds) * time.Second)
+		nextRun, _, err := ComputeNext(job.Schedule, time.Now(), s.loc)
+		if err != nil {
+			// Schedule was valid at creation; fall back to the stored interval.
+			nextRun = time.Now().Add(time.Duration(job.IntervalSeconds) * time.Second)
+		}
 		if err := s.repo.MarkRun(ctx, job.ID, nextRun); err != nil {
 			slog.Error("cron: failed to mark run", "error", err)
 		}
@@ -77,12 +89,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 }
 
 func (s *Scheduler) Add(ctx context.Context, name, prompt, schedule string) (*entity.CronJob, error) {
-	intervalSec, err := ParseSchedule(schedule)
+	nextRun, intervalSec, err := ComputeNext(schedule, time.Now(), s.loc)
 	if err != nil {
 		return nil, err
 	}
 
 	job := entity.NewCronJob(name, prompt, schedule, intervalSec)
+	job.NextRunAt = nextRun
 	if err := s.repo.Save(ctx, job); err != nil {
 		return nil, fmt.Errorf("save cron: %w", err)
 	}
