@@ -32,9 +32,11 @@ migrate:
 deploy:
 	GOOS=linux GOARCH=amd64 $(GO) build -o bin/assistant-linux ./cmd/assistant
 	ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'systemctl stop assistant'
-	scp -i ~/.ssh/cryptoai_linode bin/assistant-linux root@172.104.56.5:/opt/assistant/assistant
+	# Upload to a temp name then atomically rename. The running yuri bot symlinks
+	# to this binary and holds the inode open, so writing in place fails (ETXTBSY).
+	scp -i ~/.ssh/cryptoai_linode bin/assistant-linux root@172.104.56.5:/opt/assistant/assistant.new
 	scp -i ~/.ssh/cryptoai_linode migrations/*.sql root@172.104.56.5:/opt/assistant/migrations/
-	ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'chmod +x /opt/assistant/assistant && systemctl start assistant'
+	ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'mv -f /opt/assistant/assistant.new /opt/assistant/assistant && chmod +x /opt/assistant/assistant && systemctl start assistant'
 	@echo "Deployed. Checking status..."
 	@sleep 3
 	@ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'systemctl is-active assistant && journalctl -u assistant -n 5 --no-pager'
