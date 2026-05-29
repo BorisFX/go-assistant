@@ -20,6 +20,10 @@ llm:
   embedding:
     provider: openrouter
     model: "openai/text-embedding-3-small"
+  # Model used when a message contains images. Must be vision-capable.
+  vision:
+    provider: openrouter
+    model: "google/gemini-2.5-flash"
 
 database:
   host: localhost

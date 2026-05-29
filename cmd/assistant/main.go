@@ -136,7 +136,7 @@ func main() {
 	// Chat pipeline
 	classifier := chat.NewRuleClassifier()
 	toolLoop := chat.NewToolLoop(registry, 10)
-	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop)
+	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop, cfg.LLM.Vision.Model)
 	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
 	// Timezone for clock-time cron schedules ("daily at 09:00").

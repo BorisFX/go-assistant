@@ -11,10 +11,11 @@ import (
 )
 
 type Pipeline struct {
-	classifier *RuleClassifier
-	llm        output.LLMProvider
-	registry   output.ToolRegistry
-	executor   *ToolLoop
+	classifier  *RuleClassifier
+	llm         output.LLMProvider
+	registry    output.ToolRegistry
+	executor    *ToolLoop
+	visionModel string
 }
 
 func NewPipeline(
@@ -22,12 +23,17 @@ func NewPipeline(
 	llm output.LLMProvider,
 	registry output.ToolRegistry,
 	executor *ToolLoop,
+	visionModel string,
 ) *Pipeline {
+	if visionModel == "" {
+		visionModel = "google/gemini-2.5-flash"
+	}
 	return &Pipeline{
-		classifier: classifier,
-		llm:        llm,
-		registry:   registry,
-		executor:   executor,
+		classifier:  classifier,
+		llm:         llm,
+		registry:    registry,
+		executor:    executor,
+		visionModel: visionModel,
 	}
 }
 
@@ -66,7 +72,7 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	}
 
 	if hasImages {
-		req.Model = "openai/gpt-4o-mini" // vision-capable, cheap
+		req.Model = p.visionModel // vision-capable model (configurable)
 	}
 
 	if len(toolNames) > 0 {

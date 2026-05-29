@@ -45,6 +45,7 @@ type Telegram struct {
 type LLM struct {
 	Chat      LLMModel `yaml:"chat"`
 	Embedding LLMModel `yaml:"embedding"`
+	Vision    LLMModel `yaml:"vision"`
 }
 
 type LLMModel struct {
@@ -129,6 +130,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Timezone == "" {
 		c.Timezone = "UTC"
+	}
+	if c.LLM.Vision.Model == "" {
+		c.LLM.Vision.Model = "google/gemini-2.5-flash"
 	}
 	if c.Telegram.StreamMode == "" {
 		c.Telegram.StreamMode = "partial"
