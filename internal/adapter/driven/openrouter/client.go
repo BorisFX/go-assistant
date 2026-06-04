@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -106,7 +107,31 @@ type ResponseBody struct {
 }
 
 type Choice struct {
-	Message APIMessage `json:"message"`
+	Message      APIMessage `json:"message"`
+	FinishReason string     `json:"finish_reason"`
+}
+
+// extractContent normalizes the OpenRouter content field, which may arrive as a
+// plain string, as null, or as an array of content parts depending on the
+// upstream provider. A bare string assertion silently drops the latter two,
+// surfacing as an empty reply to the user.
+func extractContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var sb strings.Builder
+		for _, part := range v {
+			if m, ok := part.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 type Usage struct {
@@ -260,9 +285,8 @@ func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMRe
 	}
 
 	choice := apiResp.Choices[0]
-	contentStr, _ := choice.Message.Content.(string)
 	result := &output.LLMResponse{
-		Content:      contentStr,
+		Content:      extractContent(choice.Message.Content),
 		InputTokens:  apiResp.Usage.PromptTokens,
 		OutputTokens: apiResp.Usage.CompletionTokens,
 		Model:        apiResp.Model,
@@ -274,6 +298,13 @@ func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMRe
 			Name: tc.Function.Name,
 			Args: tc.Function.Arguments,
 		})
+	}
+
+	if result.Content == "" && len(result.ToolCalls) == 0 {
+		slog.Warn("llm returned empty completion",
+			"model", apiResp.Model,
+			"finish_reason", choice.FinishReason,
+			"completion_tokens", apiResp.Usage.CompletionTokens)
 	}
 
 	return result, nil

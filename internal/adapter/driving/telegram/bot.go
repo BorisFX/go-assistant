@@ -103,21 +103,32 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	go b.watchdog.Run(ctx)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-
-	updates := b.api.GetUpdatesChan(u)
-
 	slog.Info("telegram bot started", "owner_id", b.ownerID)
 
+	offset := 0
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("telegram bot stopping")
-			b.api.StopReceivingUpdates()
 			return nil
-		case update := <-updates:
-			b.watchdog.Touch()
+		default:
+		}
+
+		u := tgbotapi.NewUpdate(offset)
+		u.Timeout = 30
+
+		updates, err := b.api.GetUpdates(u)
+		if err != nil {
+			slog.Warn("getUpdates failed", "err", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		// A successful poll (even an empty one) proves polling is alive.
+		b.watchdog.Touch()
+
+		for _, update := range updates {
+			offset = update.UpdateID + 1
 			b.sequencer.Dispatch(update)
 		}
 	}

@@ -25,7 +25,7 @@ func NewRuleClassifier() *RuleClassifier {
 	c.addRule(`(?i)(загугли|google|найти в интернете|look up|в интернете)`, valueobject.RouteSearch, []string{"search_web"}, 0.95)
 	c.addRule(`(?i)(напиши код|write code|поправь код|fix code|баг|bug|рефактор|refactor|implement|реализуй)`, valueobject.RouteCode, nil, 0.95)
 	c.addRule(`(?i)(nginx|сервер|server|конфиг|config|деплой|deploy|перезапусти|restart|systemctl)`, valueobject.RouteTool, []string{"bash"}, 0.95)
-	c.addRule(`(?i)(облак|cloud|mail\.ru|объект|обьект|документ|выписк|егрн|скачай|download|прочитай|смета|акт КС|договор подряд|кс-2|кс-3|разрешен\w+ на строит|мебель|склад\b|магазин|гараж|участок|строительств|проанализируй|анализ)`, valueobject.RouteTool, []string{"cloud_files"}, 0.95)
+	c.addRule(`(?i)(облак|cloud|mail\.ru|объект|обьект|документ|выписк|егрн|скачай|download|прочитай|смета|акт КС|договор подряд|кс-2|кс-3|разрешен\w+ на строит|мебель|склад\b|магазин|гараж|участок|строительств|проанализируй|анализ|подпис|\.sig\b|сертификат|чертеж|чертёж|pdf|техплан|техническ\w+ план|кадастр)`, valueobject.RouteTool, []string{"cloud_files", "read_pdf", "inspect_signature", "bash"}, 0.95)
 	c.addRule(`(?i)(привет|hello|здравствуй|добрый день|добрый вечер|доброе утро|good morning|good evening)`, valueobject.RouteChat, nil, 0.9)
 
 	return c

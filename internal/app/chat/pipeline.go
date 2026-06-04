@@ -65,10 +65,18 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 		}
 	}
 
+	// Tool-driven work (document analysis, signatures, trading, code) is a
+	// factual task: keep temperature low so the model reports what it read
+	// instead of confabulating. Plain chat stays conversational.
+	temperature := 0.7
+	if len(toolNames) > 0 {
+		temperature = 0.2
+	}
+
 	req := output.LLMRequest{
 		Messages:    messages,
 		MaxTokens:   4096,
-		Temperature: 0.7,
+		Temperature: temperature,
 	}
 
 	if hasImages {
@@ -105,7 +113,17 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	}
 
 	if len(resp.ToolCalls) > 0 && p.executor != nil {
-		return p.executor.Run(ctx, p.llm, messages, resp, onUpdate)
+		resp, err = p.executor.Run(ctx, p.llm, messages, resp, req.Tools, temperature, onUpdate)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Some models occasionally return an empty completion (no text, no tool call).
+	// Surface a clear message rather than letting an empty reply reach the user.
+	if resp.Content == "" && len(resp.ToolCalls) == 0 {
+		slog.Warn("empty pipeline response, returning fallback")
+		resp.Content = "Что-то пошло не так — модель вернула пустой ответ. Попробуй переформулировать или повторить запрос."
 	}
 
 	return resp, nil
@@ -116,6 +134,8 @@ func (tl *ToolLoop) Run(
 	llm output.LLMProvider,
 	messages []output.LLMMessage,
 	initialResp *output.LLMResponse,
+	tools []entity.ToolDefinition,
+	temperature float64,
 	onUpdate func(string),
 ) (*output.LLMResponse, error) {
 	resp := initialResp
@@ -142,8 +162,10 @@ func (tl *ToolLoop) Run(
 				onUpdate(fmt.Sprintf("Running tool: %s", tc.Name))
 			}
 
+			slog.Info("tool loop: executing tool", "turn", turn, "tool", tc.Name)
 			result, err := tool.Execute(ctx, json.RawMessage(tc.Args))
 			if err != nil {
+				slog.Warn("tool loop: tool error", "tool", tc.Name, "error", err)
 				messages = append(messages, output.LLMMessage{
 					Role:       entity.RoleTool,
 					Content:    fmt.Sprintf("Error: %v", err),
@@ -152,10 +174,12 @@ func (tl *ToolLoop) Run(
 				continue
 			}
 
-			// Truncate tool results to prevent LLM overload
+			// Truncate tool results to prevent LLM overload. Document tools
+			// (read_pdf) can return up to 40k chars; keep enough that a single
+			// page of a document survives instead of being cut to a stub.
 			resultStr := string(result)
-			if len(resultStr) > 8000 {
-				resultStr = resultStr[:8000] + "\n\n... (truncated, full content too large)"
+			if len(resultStr) > 24000 {
+				resultStr = resultStr[:24000] + "\n\n... (truncated, full content too large)"
 			}
 
 			messages = append(messages, output.LLMMessage{
@@ -165,22 +189,22 @@ func (tl *ToolLoop) Run(
 			})
 		}
 
-		// Deduplicate tool names
-		seen := make(map[string]bool)
-		var uniqueToolNames []string
-		for _, tc := range resp.ToolCalls {
-			if !seen[tc.Name] {
-				seen[tc.Name] = true
-				uniqueToolNames = append(uniqueToolNames, tc.Name)
-			}
+		// On the final allowed turn, drop the tools so the model is forced to
+		// produce a text answer instead of requesting yet another tool call —
+		// otherwise hitting maxTurns yields an empty response to the user.
+		turnTools := tools
+		if turn == tl.maxTurns-1 {
+			turnTools = nil
 		}
-		schemas, _ := tl.registry.LoadSchemas(uniqueToolNames)
 
+		// Keep the full route toolset available every turn so the model can
+		// chain different tools (e.g. inspect_signature after read_pdf) instead
+		// of being limited to the tools it already called.
 		req := output.LLMRequest{
 			Messages:    messages,
-			Tools:       schemas,
+			Tools:       turnTools,
 			MaxTokens:   4096,
-			Temperature: 0.7,
+			Temperature: temperature,
 		}
 
 		if onUpdate != nil {
@@ -191,6 +215,31 @@ func (tl *ToolLoop) Run(
 		resp, err = llm.Chat(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("llm chat (tool loop turn %d): %w", turn, err)
+		}
+	}
+
+	// Safety net: if the loop still ended with pending tool calls and no text
+	// (e.g. the model kept calling tools), force one final tools-less answer.
+	if resp.Content == "" && len(resp.ToolCalls) > 0 {
+		slog.Warn("tool loop: exhausted turns with no text answer, forcing summary")
+		messages = append(messages, output.LLMMessage{
+			Role:      entity.RoleAssistant,
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+		for _, tc := range resp.ToolCalls {
+			messages = append(messages, output.LLMMessage{
+				Role:       entity.RoleTool,
+				Content:    "(skipped: tool-call budget exhausted)",
+				ToolCallID: tc.ID,
+			})
+		}
+		if final, err := llm.Chat(ctx, output.LLMRequest{
+			Messages:    messages,
+			MaxTokens:   4096,
+			Temperature: temperature,
+		}); err == nil {
+			resp = final
 		}
 	}
 

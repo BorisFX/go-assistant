@@ -25,7 +25,9 @@ type STTClient struct {
 func NewSTTClient(apiKey string) *STTClient {
 	return &STTClient{
 		apiKey: apiKey,
-		model:  "openai/whisper-large-v3",
+		// whisper-large-v3 on OpenRouter (Together/Groq) is currently flaky and
+		// returns intermittent 400s; gpt-4o-mini-transcribe is stable and cheaper.
+		model: "openai/gpt-4o-mini-transcribe",
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},

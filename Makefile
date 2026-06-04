@@ -29,14 +29,18 @@ clean:
 migrate:
 	$(GO) run ./cmd/assistant --migrate --config=configs/config.yaml
 
+SERVER=root@194.195.252.68
+SSH=ssh -i ~/.ssh/cryptoai_linode $(SERVER)
+SCP=scp -i ~/.ssh/cryptoai_linode
+
 deploy:
 	GOOS=linux GOARCH=amd64 $(GO) build -o bin/assistant-linux ./cmd/assistant
-	ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'systemctl stop assistant'
-	# Upload to a temp name then atomically rename. The running yuri bot symlinks
-	# to this binary and holds the inode open, so writing in place fails (ETXTBSY).
-	scp -i ~/.ssh/cryptoai_linode bin/assistant-linux root@172.104.56.5:/opt/assistant/assistant.new
-	scp -i ~/.ssh/cryptoai_linode migrations/*.sql root@172.104.56.5:/opt/assistant/migrations/
-	ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'mv -f /opt/assistant/assistant.new /opt/assistant/assistant && chmod +x /opt/assistant/assistant && systemctl start assistant'
+	$(SSH) 'systemctl stop assistant assistant-yuri'
+	# Upload to a temp name then atomically rename. Both bots share this binary
+	# (yuri symlinks to it) and hold the inode open, so writing in place fails (ETXTBSY).
+	$(SCP) bin/assistant-linux $(SERVER):/opt/assistant/assistant.new
+	$(SCP) migrations/*.sql $(SERVER):/opt/assistant/migrations/
+	$(SSH) 'mv -f /opt/assistant/assistant.new /opt/assistant/assistant && chmod +x /opt/assistant/assistant && systemctl start assistant assistant-yuri'
 	@echo "Deployed. Checking status..."
 	@sleep 3
-	@ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5 'systemctl is-active assistant && journalctl -u assistant -n 5 --no-pager'
+	@$(SSH) 'systemctl is-active assistant assistant-yuri && journalctl -u assistant-yuri -n 5 --no-pager'

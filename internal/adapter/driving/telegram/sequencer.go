@@ -1,6 +1,8 @@
 package telegram
 
 import (
+	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -39,8 +41,22 @@ func (s *ChatSequencer) Dispatch(update tgbotapi.Update) {
 
 func (s *ChatSequencer) worker(chatID int64, ch chan tgbotapi.Update) {
 	for update := range ch {
-		s.handler(update)
+		s.handle(chatID, update)
 	}
+}
+
+// handle isolates each update so a panic kills only this message, not the whole
+// bot process (an unrecovered goroutine panic would crash every chat).
+func (s *ChatSequencer) handle(chatID int64, update tgbotapi.Update) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in chat handler",
+				"chat_id", chatID,
+				"panic", r,
+				"stack", string(debug.Stack()))
+		}
+	}()
+	s.handler(update)
 }
 
 func getChatID(update tgbotapi.Update) int64 {

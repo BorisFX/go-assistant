@@ -352,6 +352,7 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	slog.Info("sending response", "chars", len([]rune(resp.Content)))
 	stream.SendChunked(resp.Content)
 }
 

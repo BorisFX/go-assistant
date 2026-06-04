@@ -41,7 +41,14 @@ RULES:
 - When doing multi-step tasks, report progress after each step.
 - Default language: Russian. Switch to English for code or if asked.
 
-TOOLS: search_web (internet search), bash (server commands), trading_status (CryptoAI), run_code (Claude Code CLI), manage_cron (schedule recurring tasks for yourself).`
+TOOLS: search_web (internet search), bash (server commands), trading_status (CryptoAI), run_code (Claude Code CLI), manage_cron (schedule recurring tasks for yourself), read_pdf (extract a PDF's real text), inspect_signature (read who really signed a .sig file).
+
+DOCUMENT CHECKS (mandatory, override any other workflow):
+- Never judge a document's content by its file name. Read it first: PDFs with read_pdf, electronic signatures (.sig) with inspect_signature.
+- Before saying anything about signatures (who signed, wrong signer, "re-sign all"), you MUST call inspect_signature on EVERY .sig the claim concerns. Do not use pdftotext/bash for signatures. A second signature by a government body or the document's author org is that party's own normal signature, not a violation.
+- Do not claim a section, legend, field or value is missing/present until you have read the actual text with read_pdf.
+- Per claim, emit "Проверено (файл X, инструмент Y): ..." when you actually read it, or "не проверено" otherwise (then no verdict is allowed). "Нарушение не выявлено" / "не подтверждается" is a valid result — never invent a discrepancy to fill a template. Mark guesses as "Предположение (не проверено): ...".
+- If read_pdf returns truncated=true and you have not found the value you need, page on with read_pdf using offset = previous offset + returned before concluding "не проверено". Only declare it missing after reading to the end (truncated=false).`
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
@@ -98,11 +105,16 @@ func main() {
 	registry.Register(builtin.NewSearchWeb(searchClient))
 	registry.Register(builtin.NewRunCode(codeExecutor, cfg.Code.DefaultDir))
 	registry.Register(builtin.NewBash())
+	registry.Register(builtin.NewReadPDF())
+	registry.Register(builtin.NewInspectSignature())
 	if tradingClient != nil {
 		registry.Register(builtin.NewTradingStatus(tradingClient))
 	}
+	filesDir := filepath.Join(filepath.Dir(*configPath), "files")
+	var mailRuCloud *builtin.MailRuCloud
 	if cfg.MailRu.Email != "" {
-		registry.Register(builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath))
+		mailRuCloud = builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath, filesDir)
+		registry.Register(mailRuCloud)
 	}
 
 	// Memory system
@@ -135,7 +147,7 @@ func main() {
 
 	// Chat pipeline
 	classifier := chat.NewRuleClassifier()
-	toolLoop := chat.NewToolLoop(registry, 10)
+	toolLoop := chat.NewToolLoop(registry, 16)
 	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop, cfg.LLM.Vision.Model)
 	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
@@ -164,7 +176,7 @@ func main() {
 			Token:           cfg.Telegram.Token,
 			OwnerID:         cfg.Telegram.OwnerID,
 			AllowedUsers:    cfg.Telegram.AllowedUsers,
-			FilesDir:        filepath.Join(filepath.Dir(*configPath), "files"),
+			FilesDir:        filesDir,
 			StreamMode:      telegram.StreamMode(cfg.Telegram.StreamMode),
 			WatchdogTimeout: cfg.Telegram.WatchdogTimeout,
 			DebounceDelay:   cfg.Telegram.DebounceDelay,
@@ -228,6 +240,12 @@ func main() {
 
 	// Cron scheduler
 	go cronScheduler.Run(ctx)
+
+	// Warm the Mail.ru cloud index so the first search hits a ready cache
+	// instead of blocking on a multi-minute WebDAV tree walk.
+	if mailRuCloud != nil {
+		go mailRuCloud.WarmIndex(ctx)
+	}
 
 	// Start HTTP server
 	go func() {

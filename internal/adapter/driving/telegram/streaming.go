@@ -1,9 +1,11 @@
 package telegram
 
 import (
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -43,16 +45,11 @@ func (d *DraftStream) SendDraft(text string) error {
 		return nil
 	}
 
-	msg := tgbotapi.NewMessage(d.chatID, text)
-	msg.ParseMode = "Markdown"
+	msg := tgbotapi.NewMessage(d.chatID, formatForTelegram(text))
 
 	sent, err := d.bot.Send(msg)
 	if err != nil {
-		msg.ParseMode = ""
-		sent, err = d.bot.Send(msg)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 
 	d.mu.Lock()
@@ -81,13 +78,8 @@ func (d *DraftStream) UpdateDraft(text string) error {
 	d.buffer.Reset()
 	d.buffer.WriteString(text)
 
-	edit := tgbotapi.NewEditMessageText(d.chatID, d.messageID, text)
-	edit.ParseMode = "Markdown"
-
-	if _, err := d.bot.Send(edit); err != nil {
-		edit.ParseMode = ""
-		d.bot.Send(edit)
-	}
+	edit := tgbotapi.NewEditMessageText(d.chatID, d.messageID, formatForTelegram(text))
+	d.bot.Send(edit)
 
 	d.lastSent = time.Now()
 	return nil
@@ -97,22 +89,27 @@ func (d *DraftStream) Finalize(text string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Telegram rejects empty message text; send a visible placeholder instead of failing silently.
+	if strings.TrimSpace(text) == "" {
+		slog.Warn("finalize: empty response, sending placeholder")
+		text = "(empty response)"
+	}
+
+	text = formatForTelegram(text)
+
 	if d.messageID == 0 {
 		msg := tgbotapi.NewMessage(d.chatID, text)
-		msg.ParseMode = "Markdown"
 		if _, err := d.bot.Send(msg); err != nil {
-			msg.ParseMode = ""
-			d.bot.Send(msg)
+			slog.Error("finalize send failed", "err", err)
+			return err
 		}
 		return nil
 	}
 
 	edit := tgbotapi.NewEditMessageText(d.chatID, d.messageID, text)
-	edit.ParseMode = "Markdown"
-
 	if _, err := d.bot.Send(edit); err != nil {
-		edit.ParseMode = ""
-		d.bot.Send(edit)
+		slog.Error("finalize edit failed", "err", err)
+		return err
 	}
 
 	return nil
@@ -121,7 +118,9 @@ func (d *DraftStream) Finalize(text string) error {
 func (d *DraftStream) SendChunked(text string) error {
 	const maxLen = 4000
 
-	if len(text) <= maxLen {
+	// Count runes, not bytes — Telegram's limit is in characters, and byte-length
+	// over-counts multi-byte text, triggering needless (and buggy) splits.
+	if utf8.RuneCountInString(text) <= maxLen {
 		return d.Finalize(text)
 	}
 
@@ -134,28 +133,37 @@ func (d *DraftStream) SendChunked(text string) error {
 			msg.ParseMode = "Markdown"
 			if _, err := d.bot.Send(msg); err != nil {
 				msg.ParseMode = ""
-				d.bot.Send(msg)
+				if _, err2 := d.bot.Send(msg); err2 != nil {
+					slog.Error("sendChunked send failed", "chunk", i, "markdown_err", err, "plain_err", err2)
+				}
 			}
 		}
 	}
 	return nil
 }
 
+// splitText splits on rune boundaries so multi-byte characters (e.g. Cyrillic)
+// are never cut in half — a cut mid-rune produces invalid UTF-8 that Telegram rejects.
 func splitText(text string, maxLen int) []string {
 	var chunks []string
-	for len(text) > 0 {
-		if len(text) <= maxLen {
-			chunks = append(chunks, text)
+	runes := []rune(text)
+	for len(runes) > 0 {
+		if len(runes) <= maxLen {
+			chunks = append(chunks, string(runes))
 			break
 		}
 
-		idx := strings.LastIndex(text[:maxLen], "\n")
-		if idx <= 0 {
-			idx = maxLen
+		window := string(runes[:maxLen])
+		cut := maxLen
+		if idx := strings.LastIndex(window, "\n"); idx > 0 {
+			cut = utf8.RuneCountInString(window[:idx])
+		}
+		if cut <= 0 {
+			cut = maxLen
 		}
 
-		chunks = append(chunks, text[:idx])
-		text = text[idx:]
+		chunks = append(chunks, string(runes[:cut]))
+		runes = runes[cut:]
 	}
 	return chunks
 }
