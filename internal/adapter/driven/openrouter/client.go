@@ -246,7 +246,7 @@ func applyCaching(model string, body *RequestBody) {
 }
 
 // cacheMessage converts a message's content to the array form (if needed) and
-// attaches a cache breakpoint to its final text part.
+// attaches a cache breakpoint to its final content part (text or image).
 func cacheMessage(m *APIMessage) {
 	switch c := m.Content.(type) {
 	case string:
