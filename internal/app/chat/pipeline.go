@@ -13,7 +13,6 @@ import (
 type Pipeline struct {
 	classifier  *RuleClassifier
 	llm         output.LLMProvider
-	synthLLM    output.LLMProvider
 	registry    output.ToolRegistry
 	executor    *ToolLoop
 	visionModel string
@@ -22,7 +21,6 @@ type Pipeline struct {
 func NewPipeline(
 	classifier *RuleClassifier,
 	llm output.LLMProvider,
-	synthLLM output.LLMProvider,
 	registry output.ToolRegistry,
 	executor *ToolLoop,
 	visionModel string,
@@ -33,7 +31,6 @@ func NewPipeline(
 	return &Pipeline{
 		classifier:  classifier,
 		llm:         llm,
-		synthLLM:    synthLLM,
 		registry:    registry,
 		executor:    executor,
 		visionModel: visionModel,
@@ -116,7 +113,7 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	}
 
 	if len(resp.ToolCalls) > 0 && p.executor != nil {
-		resp, err = p.executor.Run(ctx, p.llm, p.synthLLM, messages, resp, req.Tools, temperature, onUpdate)
+		resp, err = p.executor.Run(ctx, p.llm, messages, resp, req.Tools, temperature, onUpdate)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +132,6 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 func (tl *ToolLoop) Run(
 	ctx context.Context,
 	llm output.LLMProvider,
-	synthLLM output.LLMProvider,
 	messages []output.LLMMessage,
 	initialResp *output.LLMResponse,
 	tools []entity.ToolDefinition,
@@ -232,24 +228,12 @@ func (tl *ToolLoop) Run(
 		}
 	}
 
-	// Final synthesis. When a dedicated (pricier) synthesis model is configured,
-	// the cheap model drives every tool-calling turn and the expensive model is
-	// invoked exactly once to write the conclusion from the gathered context.
-	// Without a synthesis model, we still force a final pass when the loop ended
-	// empty, so the user never gets a blank reply.
-	needFinal := synthLLM != nil || resp.Content == ""
-	if needFinal {
-		finalLLM := llm
-		if synthLLM != nil {
-			finalLLM = synthLLM
-			slog.Info("tool loop: handing final answer to synthesis model")
-		} else {
-			slog.Warn("tool loop: ended with empty answer, forcing final summary")
-		}
-
-		// If the loop ended on an unanswered tool request (hit the turn budget),
-		// close those calls out with placeholders so the message history stays
-		// valid (assistant tool_calls must be followed by tool results).
+	// Safety net: if the loop ended without text (model kept calling tools to
+	// the budget, or the final tools-less turn returned nothing), force one more
+	// call that asks for an answer from what was gathered, so the user never
+	// gets an empty reply.
+	if resp.Content == "" {
+		slog.Warn("tool loop: ended with empty answer, forcing final summary")
 		if len(resp.ToolCalls) > 0 {
 			messages = append(messages, output.LLMMessage{
 				Role:      entity.RoleAssistant,
@@ -263,31 +247,16 @@ func (tl *ToolLoop) Run(
 					ToolCallID: tc.ID,
 				})
 			}
-		} else if resp.Content != "" {
-			// The cheap model already produced a draft answer; keep it in the
-			// transcript so the synthesis model refines rather than restarts.
-			messages = append(messages, output.LLMMessage{
-				Role:    entity.RoleAssistant,
-				Content: resp.Content,
-			})
 		}
-
 		messages = append(messages, output.LLMMessage{
 			Role:    entity.RoleUser,
 			Content: "Хватит вызывать инструменты. На основе уже собранных данных дай финальный ответ на русском прямо сейчас. Если каких-то данных не хватило — честно перечисли, что осталось непроверенным.",
 		})
-
-		if onUpdate != nil {
-			onUpdate("Formulating answer...")
-		}
-
-		if final, err := finalLLM.Chat(ctx, output.LLMRequest{
+		if final, err := llm.Chat(ctx, output.LLMRequest{
 			Messages:    messages,
 			MaxTokens:   4096,
 			Temperature: temperature,
-		}); err != nil {
-			slog.Warn("tool loop: final synthesis failed", "error", err)
-		} else if final.Content != "" {
+		}); err == nil && final.Content != "" {
 			resp = final
 		}
 	}
