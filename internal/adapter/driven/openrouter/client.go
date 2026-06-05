@@ -69,9 +69,14 @@ type APIMessage struct {
 }
 
 type ContentPart struct {
-	Type     string    `json:"type"`               // "text" or "image_url"
-	Text     string    `json:"text,omitempty"`
-	ImageURL *ImageURL `json:"image_url,omitempty"`
+	Type         string        `json:"type"` // "text" or "image_url"
+	Text         string        `json:"text,omitempty"`
+	ImageURL     *ImageURL     `json:"image_url,omitempty"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+type CacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 type ImageURL struct {
@@ -79,8 +84,9 @@ type ImageURL struct {
 }
 
 type APITool struct {
-	Type     string      `json:"type"`
-	Function APIFunction `json:"function"`
+	Type         string        `json:"type"`
+	Function     APIFunction   `json:"function"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type APIFunction struct {
@@ -135,8 +141,11 @@ func extractContent(content any) string {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 func BuildRequestBody(model string, req output.LLMRequest) RequestBody {
@@ -211,7 +220,47 @@ func BuildRequestBody(model string, req output.LLMRequest) RequestBody {
 		})
 	}
 
+	applyCaching(model, &body)
 	return body
+}
+
+// applyCaching marks the stable request prefix with Anthropic ephemeral cache
+// breakpoints so the tool loop re-reads it at ~0.1x instead of full price.
+// No-op for non-Anthropic models (OpenRouter ignores/rejects cache_control there).
+func applyCaching(model string, body *RequestBody) {
+	if !strings.HasPrefix(model, "anthropic/") {
+		return
+	}
+	if n := len(body.Tools); n > 0 {
+		body.Tools[n-1].CacheControl = &CacheControl{Type: "ephemeral"}
+	}
+	for i := range body.Messages {
+		if body.Messages[i].Role == "system" {
+			cacheMessage(&body.Messages[i])
+			break
+		}
+	}
+	if n := len(body.Messages); n >= 2 {
+		cacheMessage(&body.Messages[n-2])
+	}
+}
+
+// cacheMessage converts a message's content to the array form (if needed) and
+// attaches a cache breakpoint to its final text part.
+func cacheMessage(m *APIMessage) {
+	switch c := m.Content.(type) {
+	case string:
+		if c == "" {
+			return
+		}
+		m.Content = []ContentPart{{Type: "text", Text: c, CacheControl: &CacheControl{Type: "ephemeral"}}}
+	case []ContentPart:
+		if len(c) == 0 {
+			return
+		}
+		c[len(c)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+		m.Content = c
+	}
 }
 
 func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error) {
@@ -298,6 +347,13 @@ func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMRe
 			Name: tc.Function.Name,
 			Args: tc.Function.Arguments,
 		})
+	}
+
+	if apiResp.Usage.PromptTokensDetails.CachedTokens > 0 {
+		slog.Info("llm cache hit",
+			"model", apiResp.Model,
+			"cached_tokens", apiResp.Usage.PromptTokensDetails.CachedTokens,
+			"prompt_tokens", apiResp.Usage.PromptTokens)
 	}
 
 	if result.Content == "" && len(result.ToolCalls) == 0 {

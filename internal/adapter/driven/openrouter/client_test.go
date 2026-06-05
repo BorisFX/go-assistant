@@ -78,3 +78,40 @@ func TestBuildRequestBody_WithToolDefinitions(t *testing.T) {
 		t.Errorf("expected tool name search_web, got %s", body.Tools[0].Function.Name)
 	}
 }
+
+func TestBuildRequestBody_CachesAnthropicSystemAndPrefix(t *testing.T) {
+	req := output.LLMRequest{
+		Messages: []output.LLMMessage{
+			{Role: entity.RoleSystem, Content: "You are an assistant."},
+			{Role: entity.RoleUser, Content: "first"},
+			{Role: entity.RoleAssistant, Content: "answer"},
+			{Role: entity.RoleUser, Content: "second"},
+		},
+	}
+	body := openrouter.BuildRequestBody("anthropic/claude-sonnet-4.6", req)
+
+	sysParts, ok := body.Messages[0].Content.([]openrouter.ContentPart)
+	if !ok {
+		t.Fatalf("system content = %T, want []ContentPart", body.Messages[0].Content)
+	}
+	if sysParts[len(sysParts)-1].CacheControl == nil {
+		t.Error("system message missing cache_control breakpoint")
+	}
+
+	last := body.Messages[len(body.Messages)-2]
+	parts, ok := last.Content.([]openrouter.ContentPart)
+	if !ok || parts[len(parts)-1].CacheControl == nil {
+		t.Error("trailing-stable message missing cache_control breakpoint")
+	}
+}
+
+func TestBuildRequestBody_NoCacheForNonAnthropic(t *testing.T) {
+	req := output.LLMRequest{Messages: []output.LLMMessage{
+		{Role: entity.RoleSystem, Content: "sys"},
+		{Role: entity.RoleUser, Content: "hi"},
+	}}
+	body := openrouter.BuildRequestBody("deepseek/deepseek-v4-pro", req)
+	if _, isArray := body.Messages[0].Content.([]openrouter.ContentPart); isArray {
+		t.Error("non-anthropic model should keep plain string content (no cache parts)")
+	}
+}
