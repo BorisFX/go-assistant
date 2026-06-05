@@ -24,6 +24,13 @@ llm:
   vision:
     provider: openrouter
     model: "google/gemini-2.5-flash"
+  # Optional. The cheap `chat` model drives every tool-calling turn; this
+  # (usually pricier) model is invoked once to write the final answer from the
+  # gathered context. Leave unset to use `chat` for the conclusion too.
+  synthesis:
+    provider: openrouter
+    model: "anthropic/claude-sonnet-4.6"
+    api_key: ${OPENROUTER_KEY}
 
 database:
   host: localhost

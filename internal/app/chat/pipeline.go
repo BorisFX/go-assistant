@@ -13,6 +13,7 @@ import (
 type Pipeline struct {
 	classifier  *RuleClassifier
 	llm         output.LLMProvider
+	synthLLM    output.LLMProvider
 	registry    output.ToolRegistry
 	executor    *ToolLoop
 	visionModel string
@@ -21,6 +22,7 @@ type Pipeline struct {
 func NewPipeline(
 	classifier *RuleClassifier,
 	llm output.LLMProvider,
+	synthLLM output.LLMProvider,
 	registry output.ToolRegistry,
 	executor *ToolLoop,
 	visionModel string,
@@ -31,6 +33,7 @@ func NewPipeline(
 	return &Pipeline{
 		classifier:  classifier,
 		llm:         llm,
+		synthLLM:    synthLLM,
 		registry:    registry,
 		executor:    executor,
 		visionModel: visionModel,
@@ -113,7 +116,7 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	}
 
 	if len(resp.ToolCalls) > 0 && p.executor != nil {
-		resp, err = p.executor.Run(ctx, p.llm, messages, resp, req.Tools, temperature, onUpdate)
+		resp, err = p.executor.Run(ctx, p.llm, p.synthLLM, messages, resp, req.Tools, temperature, onUpdate)
 		if err != nil {
 			return nil, err
 		}
@@ -132,6 +135,7 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 func (tl *ToolLoop) Run(
 	ctx context.Context,
 	llm output.LLMProvider,
+	synthLLM output.LLMProvider,
 	messages []output.LLMMessage,
 	initialResp *output.LLMResponse,
 	tools []entity.ToolDefinition,
@@ -189,6 +193,16 @@ func (tl *ToolLoop) Run(
 			})
 		}
 
+		// Make the model aware the tool budget is finite so it converges on an
+		// answer instead of investigating until it runs out. Escalate the warning
+		// as the limit approaches.
+		if remaining := tl.maxTurns - turn - 1; remaining <= 3 {
+			messages = append(messages, output.LLMMessage{
+				Role:    entity.RoleSystem,
+				Content: fmt.Sprintf("Внимание: осталось %d вызовов инструментов из %d. Заканчивай сбор данных и переходи к финальному текстовому ответу на русском — на последнем шаге инструменты будут недоступны.", remaining, tl.maxTurns),
+			})
+		}
+
 		// On the final allowed turn, drop the tools so the model is forced to
 		// produce a text answer instead of requesting yet another tool call —
 		// otherwise hitting maxTurns yields an empty response to the user.
@@ -218,27 +232,62 @@ func (tl *ToolLoop) Run(
 		}
 	}
 
-	// Safety net: if the loop still ended with pending tool calls and no text
-	// (e.g. the model kept calling tools), force one final tools-less answer.
-	if resp.Content == "" && len(resp.ToolCalls) > 0 {
-		slog.Warn("tool loop: exhausted turns with no text answer, forcing summary")
-		messages = append(messages, output.LLMMessage{
-			Role:      entity.RoleAssistant,
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-		for _, tc := range resp.ToolCalls {
+	// Final synthesis. When a dedicated (pricier) synthesis model is configured,
+	// the cheap model drives every tool-calling turn and the expensive model is
+	// invoked exactly once to write the conclusion from the gathered context.
+	// Without a synthesis model, we still force a final pass when the loop ended
+	// empty, so the user never gets a blank reply.
+	needFinal := synthLLM != nil || resp.Content == ""
+	if needFinal {
+		finalLLM := llm
+		if synthLLM != nil {
+			finalLLM = synthLLM
+			slog.Info("tool loop: handing final answer to synthesis model")
+		} else {
+			slog.Warn("tool loop: ended with empty answer, forcing final summary")
+		}
+
+		// If the loop ended on an unanswered tool request (hit the turn budget),
+		// close those calls out with placeholders so the message history stays
+		// valid (assistant tool_calls must be followed by tool results).
+		if len(resp.ToolCalls) > 0 {
 			messages = append(messages, output.LLMMessage{
-				Role:       entity.RoleTool,
-				Content:    "(skipped: tool-call budget exhausted)",
-				ToolCallID: tc.ID,
+				Role:      entity.RoleAssistant,
+				Content:   resp.Content,
+				ToolCalls: resp.ToolCalls,
+			})
+			for _, tc := range resp.ToolCalls {
+				messages = append(messages, output.LLMMessage{
+					Role:       entity.RoleTool,
+					Content:    "(пропущено: лимит вызовов инструментов исчерпан)",
+					ToolCallID: tc.ID,
+				})
+			}
+		} else if resp.Content != "" {
+			// The cheap model already produced a draft answer; keep it in the
+			// transcript so the synthesis model refines rather than restarts.
+			messages = append(messages, output.LLMMessage{
+				Role:    entity.RoleAssistant,
+				Content: resp.Content,
 			})
 		}
-		if final, err := llm.Chat(ctx, output.LLMRequest{
+
+		messages = append(messages, output.LLMMessage{
+			Role:    entity.RoleUser,
+			Content: "Хватит вызывать инструменты. На основе уже собранных данных дай финальный ответ на русском прямо сейчас. Если каких-то данных не хватило — честно перечисли, что осталось непроверенным.",
+		})
+
+		if onUpdate != nil {
+			onUpdate("Formulating answer...")
+		}
+
+		if final, err := finalLLM.Chat(ctx, output.LLMRequest{
 			Messages:    messages,
 			MaxTokens:   4096,
 			Temperature: temperature,
-		}); err == nil {
+		}); err != nil {
+			slog.Warn("tool loop: final synthesis failed", "error", err)
+		} else if final.Content != "" {
 			resp = final
 		}
 	}

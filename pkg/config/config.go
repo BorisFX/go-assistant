@@ -46,6 +46,11 @@ type LLM struct {
 	Chat      LLMModel `yaml:"chat"`
 	Embedding LLMModel `yaml:"embedding"`
 	Vision    LLMModel `yaml:"vision"`
+	// Synthesis is the (usually pricier) model used only to write the final
+	// answer after the tool loop finishes. The cheap Chat model drives the
+	// many tool-calling turns; this model runs once on the gathered context.
+	// When unset, the Chat model is used for the final answer too.
+	Synthesis LLMModel `yaml:"synthesis"`
 }
 
 type LLMModel struct {

@@ -24,6 +24,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/chat"
 	cronpkg "github.com/olegmatyakubov/go-assistant/internal/app/cron"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
@@ -92,6 +93,19 @@ func main() {
 
 	// Adapters
 	llmClient := openrouter.New(cfg.LLM.Chat.APIKey, cfg.LLM.Chat.Model, cfg.LLM.Chat.Fallback)
+
+	// Optional synthesis model: the cheap Chat model drives the tool-calling
+	// turns, and this (usually pricier) model writes the final answer once. Kept
+	// as a nil interface when unconfigured so the tool loop falls back to Chat.
+	var synthLLM output.LLMProvider
+	if cfg.LLM.Synthesis.Model != "" {
+		key := cfg.LLM.Synthesis.APIKey
+		if key == "" {
+			key = cfg.LLM.Chat.APIKey
+		}
+		synthLLM = openrouter.New(key, cfg.LLM.Synthesis.Model, cfg.LLM.Synthesis.Fallback)
+		slog.Info("synthesis model enabled", "model", cfg.LLM.Synthesis.Model)
+	}
 	searchClient := searxng.New(cfg.Search.SearXNGURL)
 	codeExecutor := claudecode.New(cfg.Code.DefaultDir, cfg.Code.Binary)
 
@@ -147,8 +161,8 @@ func main() {
 
 	// Chat pipeline
 	classifier := chat.NewRuleClassifier()
-	toolLoop := chat.NewToolLoop(registry, 16)
-	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop, cfg.LLM.Vision.Model)
+	toolLoop := chat.NewToolLoop(registry, 25)
+	pipeline := chat.NewPipeline(classifier, llmClient, synthLLM, registry, toolLoop, cfg.LLM.Vision.Model)
 	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
 	// Timezone for clock-time cron schedules ("daily at 09:00").
