@@ -39,9 +39,10 @@ type MailRuCloud struct {
 	filesDir string // local dir for downloads and the cached index
 	client   *http.Client
 
-	indexMu   sync.Mutex
-	index     []indexEntry
-	indexTime time.Time
+	indexMu    sync.Mutex
+	index      []indexEntry
+	indexTime  time.Time
+	refreshing bool // a background reindex is in flight
 }
 
 func NewMailRuCloud(email, password, basePath, filesDir string) *MailRuCloud {
@@ -390,31 +391,101 @@ func pathLeaf(p string) string {
 // ensureIndex returns the cached tree, rebuilding it when forced, when the
 // in-memory copy is stale, or when no fresh on-disk copy exists.
 func (m *MailRuCloud) ensureIndex(ctx context.Context, force bool) ([]indexEntry, time.Time, error) {
-	m.indexMu.Lock()
-	defer m.indexMu.Unlock()
-
-	if !force {
-		if m.index != nil && time.Since(m.indexTime) < indexTTL {
-			return m.index, m.indexTime, nil
-		}
-		if m.index == nil {
-			if entries, builtAt, ok := m.loadIndex(); ok && time.Since(builtAt) < indexTTL {
-				m.index = entries
-				m.indexTime = builtAt
-				return entries, builtAt, nil
-			}
-		}
+	if force {
+		return m.rebuildAndStore(ctx)
 	}
 
+	m.indexMu.Lock()
+	// Fresh in-memory copy — serve directly.
+	if m.index != nil && time.Since(m.indexTime) < indexTTL {
+		entries, builtAt := m.index, m.indexTime
+		m.indexMu.Unlock()
+		return entries, builtAt, nil
+	}
+	// Stale in-memory copy — serve it now, rebuild in the background.
+	if m.index != nil {
+		entries, builtAt := m.index, m.indexTime
+		m.indexMu.Unlock()
+		m.refreshAsync()
+		return entries, builtAt, nil
+	}
+	// No in-memory copy yet — fall back to the on-disk cache, even if stale, so a
+	// restarted process never blocks a request on a full WebDAV walk.
+	if entries, builtAt, ok := m.loadIndex(); ok {
+		m.index = entries
+		m.indexTime = builtAt
+		m.indexMu.Unlock()
+		if time.Since(builtAt) >= indexTTL {
+			m.refreshAsync()
+		}
+		return entries, builtAt, nil
+	}
+	m.indexMu.Unlock()
+
+	// Cold cache (no memory, no disk) — this one request must wait for the build.
+	return m.rebuildAndStore(ctx)
+}
+
+// rebuildAndStore walks the cloud tree, then atomically swaps the cached index and
+// persists it to disk. The walk runs without the index lock so concurrent reads of
+// the old index are not blocked for the (minutes-long) duration of the walk.
+func (m *MailRuCloud) rebuildAndStore(ctx context.Context) ([]indexEntry, time.Time, error) {
 	entries, err := m.buildIndex(ctx)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
 	now := time.Now()
+	m.indexMu.Lock()
 	m.index = entries
 	m.indexTime = now
+	m.indexMu.Unlock()
 	m.saveIndex(entries, now)
 	return entries, now, nil
+}
+
+// refreshAsync rebuilds the index in the background on a detached context, so a
+// request whose deadline is about to expire cannot kill the walk. At most one
+// refresh runs at a time.
+func (m *MailRuCloud) refreshAsync() {
+	m.indexMu.Lock()
+	if m.refreshing {
+		m.indexMu.Unlock()
+		return
+	}
+	m.refreshing = true
+	m.indexMu.Unlock()
+
+	go func() {
+		defer func() {
+			m.indexMu.Lock()
+			m.refreshing = false
+			m.indexMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if _, _, err := m.rebuildAndStore(ctx); err != nil {
+			slog.Warn("mailru background reindex failed", "error", err)
+			return
+		}
+		slog.Info("mailru index refreshed in background")
+	}()
+}
+
+// RefreshLoop keeps the cloud index warm by rebuilding it on a fixed interval
+// shorter than indexTTL, so the request path always finds a fresh cache and never
+// blocks on a synchronous WebDAV walk. Run it in a background goroutine.
+func (m *MailRuCloud) RefreshLoop(ctx context.Context) {
+	const interval = indexTTL - time.Hour
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.refreshAsync()
+		}
+	}
 }
 
 // buildIndex walks the whole tree under basePath breadth-first, collecting every

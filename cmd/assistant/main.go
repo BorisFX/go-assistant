@@ -245,6 +245,7 @@ func main() {
 	// instead of blocking on a multi-minute WebDAV tree walk.
 	if mailRuCloud != nil {
 		go mailRuCloud.WarmIndex(ctx)
+		go mailRuCloud.RefreshLoop(ctx)
 	}
 
 	// Start HTTP server
