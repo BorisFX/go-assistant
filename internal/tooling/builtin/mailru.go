@@ -726,3 +726,86 @@ func isBinaryContent(contentType, path string) bool {
 	}
 	return false
 }
+
+// normalizeSub canonicalizes a subfolder argument to match indexEntry.Path form:
+// leading "/", no trailing "/", original case preserved. Empty/"/" → "" (whole tree).
+func normalizeSub(sub string) string {
+	sub = strings.TrimSpace(sub)
+	sub = strings.TrimSuffix(sub, "/")
+	if sub == "" {
+		return ""
+	}
+	if !strings.HasPrefix(sub, "/") {
+		sub = "/" + sub
+	}
+	return sub
+}
+
+// extAllowed reports whether path carries one of the allowed extensions
+// (case-insensitive). Empty exts allows any file.
+func extAllowed(path string, exts []string) bool {
+	if len(exts) == 0 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, e := range exts {
+		if ext == strings.ToLower(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterIndexByPrefixExt selects file entries whose Path lies under prefix and
+// matches the allowed extensions, preserving index order. Pure (no network), so
+// it carries the filtering unit tests for CollectFolder.
+func filterIndexByPrefixExt(entries []indexEntry, prefix string, exts []string) []string {
+	var out []string
+	for _, e := range entries {
+		if e.IsDir {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(e.Path, prefix) {
+			continue
+		}
+		if extAllowed(e.Path, exts) {
+			out = append(out, e.Path)
+		}
+	}
+	return out
+}
+
+// CollectFolder recursively gathers documents from subfolder sub (relative to
+// basePath), filters by exts, guards the file count (maxFiles, 0 = unlimited) and
+// downloads each locally. Returns local paths in traversal order. The file-count
+// guard protects against an accidentally expensive batch. A download that fails is
+// skipped rather than failing the whole collection.
+func (m *MailRuCloud) CollectFolder(ctx context.Context, sub string, exts []string, maxFiles int) ([]string, error) {
+	entries, _, err := m.ensureIndex(ctx, false)
+	if err != nil {
+		return nil, fmt.Errorf("collect folder %q: %w", sub, err)
+	}
+	prefix := normalizeSub(sub)
+	cloudPaths := filterIndexByPrefixExt(entries, prefix, exts)
+	if maxFiles > 0 && len(cloudPaths) > maxFiles {
+		return nil, fmt.Errorf("collect folder %q: %d файлов превышает лимит %d — сузьте папку", sub, len(cloudPaths), maxFiles)
+	}
+	local := make([]string, 0, len(cloudPaths))
+	for _, cp := range cloudPaths {
+		raw, err := m.downloadFile(ctx, cp)
+		if err != nil {
+			slog.Warn("collect: download failed", "path", cp, "error", err)
+			continue // a missing file does not fail collection; orchestrator marks it unread
+		}
+		var res struct {
+			LocalPath string `json:"local_path"`
+		}
+		if json.Unmarshal(raw, &res) == nil && res.LocalPath != "" {
+			local = append(local, res.LocalPath)
+		}
+	}
+	if len(local) == 0 {
+		return nil, fmt.Errorf("collect folder %q: подходящих документов не найдено", sub)
+	}
+	return local, nil
+}
