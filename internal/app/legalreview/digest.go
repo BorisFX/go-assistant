@@ -51,6 +51,10 @@ const digestSystemPrompt = `Ты — аналитик, готовящий ДАЙ
 
 const digestMaxTokens = 8192
 
+// defaultMaxChars is the fallback worker budget (~12k tokens at chars≈tokens×4).
+// Guards against a zero budget silently producing one LLM call per page.
+const defaultMaxChars = 48000
+
 // subagentRunner is the slice of *subagent.Runner the worker needs, isolated as
 // an interface so the worker is testable without a real LLM.
 type subagentRunner interface {
@@ -73,6 +77,9 @@ type DigestWorker struct {
 }
 
 func NewDigestWorker(runner subagentRunner, model string, maxChars int) *DigestWorker {
+	if maxChars <= 0 {
+		maxChars = defaultMaxChars
+	}
 	return &DigestWorker{runner: runner, model: model, maxChars: maxChars}
 }
 

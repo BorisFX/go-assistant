@@ -158,3 +158,19 @@ func TestDigest_EmptyOutputErrors(t *testing.T) {
 		t.Fatalf("want error on empty digest output")
 	}
 }
+
+// A zero budget must fall back to the default, not split every page into its own
+// LLM call (a silent cost/latency explosion for big documents).
+func TestDigest_ZeroBudgetFallsBackToDefault(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"ok"}}
+	w := NewDigestWorker(runner, "m", 0)
+	doc := extraction.Result{Path: "/d/x.pdf", Pages: []output.PDFPage{
+		{Number: 1, Text: "a"}, {Number: 2, Text: "b"}, {Number: 3, Text: "c"},
+	}}
+	if _, err := w.Digest(context.Background(), doc); err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	if len(runner.tasks) != 1 {
+		t.Fatalf("want a single batched call under default budget, got %d", len(runner.tasks))
+	}
+}
