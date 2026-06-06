@@ -1,0 +1,91 @@
+package subagent_test
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
+	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
+	"github.com/olegmatyakubov/go-assistant/internal/tooling"
+)
+
+// fakeLLM returns scripted responses in order and records each request received.
+type fakeLLM struct {
+	responses []*output.LLMResponse
+	calls     []output.LLMRequest
+}
+
+func (f *fakeLLM) Chat(_ context.Context, req output.LLMRequest) (*output.LLMResponse, error) {
+	f.calls = append(f.calls, req)
+	i := len(f.calls) - 1
+	if i >= len(f.responses) {
+		return &output.LLMResponse{}, nil
+	}
+	return f.responses[i], nil
+}
+
+func (f *fakeLLM) ChatStream(ctx context.Context, req output.LLMRequest, _ func(string)) (*output.LLMResponse, error) {
+	return f.Chat(ctx, req)
+}
+
+// fakeTool records how many times it ran and returns a fixed JSON result.
+type fakeTool struct {
+	name   string
+	result string
+	calls  int
+}
+
+func (t *fakeTool) Name() string           { return t.name }
+func (t *fakeTool) Description() string     { return "fake tool " + t.name }
+func (t *fakeTool) Category() string        { return "test" }
+func (t *fakeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object","properties":{}}`) }
+func (t *fakeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	t.calls++
+	return json.RawMessage(t.result), nil
+}
+
+func newRegistry(t *testing.T, tools ...output.Tool) *tooling.Registry {
+	t.Helper()
+	r := tooling.NewRegistry()
+	for _, tl := range tools {
+		if err := r.Register(tl); err != nil {
+			t.Fatalf("register %s: %v", tl.Name(), err)
+		}
+	}
+	return r
+}
+
+func TestRunnerReturnsFinalTextNoTools(t *testing.T) {
+	llm := &fakeLLM{responses: []*output.LLMResponse{{Content: "digest text"}}}
+	r := subagent.NewRunner(llm, newRegistry(t))
+
+	got, err := r.Run(context.Background(), subagent.Config{
+		Model:        "deepseek/deepseek-v4-flash",
+		SystemPrompt: "You summarize.",
+		Temperature:  0.2,
+		MaxTokens:    1000,
+	}, "summarize this document")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "digest text" {
+		t.Errorf("got %q, want %q", got, "digest text")
+	}
+	if len(llm.calls) != 1 {
+		t.Fatalf("want 1 llm call, got %d", len(llm.calls))
+	}
+	req := llm.calls[0]
+	if req.Model != "deepseek/deepseek-v4-flash" {
+		t.Errorf("model: got %q", req.Model)
+	}
+	if len(req.Tools) != 0 {
+		t.Errorf("want no tools, got %d", len(req.Tools))
+	}
+	if len(req.Messages) != 2 ||
+		req.Messages[0].Role != entity.RoleSystem || req.Messages[0].Content != "You summarize." ||
+		req.Messages[1].Role != entity.RoleUser || req.Messages[1].Content != "summarize this document" {
+		t.Errorf("unexpected messages: %+v", req.Messages)
+	}
+}
