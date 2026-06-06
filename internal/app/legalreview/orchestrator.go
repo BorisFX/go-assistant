@@ -87,3 +87,10 @@ func (o *Orchestrator) processOne(ctx context.Context, path string) Digest {
 	}
 	return dig
 }
+
+// Compile-time: реальные реализации удовлетворяют интерфейсам ядра.
+var (
+	_ extractor = (*extraction.Router)(nil)
+	_ digester  = (*DigestWorker)(nil)
+	_ reviewer  = (*Coordinator)(nil)
+)
