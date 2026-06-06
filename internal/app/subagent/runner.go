@@ -66,9 +66,16 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 
 	var resp *output.LLMResponse
 	for turn := 0; turn < cfg.MaxTurns; turn++ {
+		// On the final allowed turn, withdraw the tools so the model must produce
+		// a text answer instead of requesting yet another call it cannot make.
+		turnTools := tools
+		if turn == cfg.MaxTurns-1 {
+			turnTools = nil
+		}
+
 		resp, err = r.llm.Chat(ctx, output.LLMRequest{
 			Messages:    messages,
-			Tools:       tools,
+			Tools:       turnTools,
 			Model:       cfg.Model,
 			MaxTokens:   cfg.MaxTokens,
 			Temperature: cfg.Temperature,

@@ -191,3 +191,31 @@ func TestRunnerRefusesDisallowedTool(t *testing.T) {
 		t.Errorf("expected refusal message fed back, got %+v", second.Messages)
 	}
 }
+
+func TestRunnerDropsToolsOnFinalTurn(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"ok":true}`}
+	// Model tries to call a tool every turn; the 2-turn budget must force an answer.
+	llm := &fakeLLM{responses: []*output.LLMResponse{
+		{ToolCalls: []entity.ToolCall{{ID: "c1", Name: "alpha", Args: "{}"}}},
+		{Content: "forced final answer"},
+	}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha))
+
+	got, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"alpha"},
+		MaxTurns:  2,
+	}, "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "forced final answer" {
+		t.Errorf("got %q, want %q", got, "forced final answer")
+	}
+	if len(llm.calls) != 2 {
+		t.Fatalf("want exactly 2 llm calls, got %d", len(llm.calls))
+	}
+	if len(llm.calls[1].Tools) != 0 {
+		t.Errorf("final turn must withdraw tools, got %d", len(llm.calls[1].Tools))
+	}
+}
