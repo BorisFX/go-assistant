@@ -21,6 +21,7 @@ type Config struct {
 	Memory       MemoryConfig `yaml:"memory"`
 	SystemPrompt string       `yaml:"system_prompt_file"`
 	MailRu       MailRu       `yaml:"mailru"`
+	LegalReview  LegalReview  `yaml:"legal_review"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
 	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
 	Timezone string `yaml:"timezone"`
@@ -30,6 +31,20 @@ type MailRu struct {
 	Email    string `yaml:"email"`
 	Password string `yaml:"password"`
 	BasePath string `yaml:"base_path"`
+}
+
+// LegalReview configures the legal-document-review pipeline. Off by default
+// (zero value Enabled=false), so existing configs need no migration.
+type LegalReview struct {
+	Enabled                   bool   `yaml:"enabled"`
+	NormativyPath             string `yaml:"normativy_path"`
+	MaxFiles                  int    `yaml:"max_files"`
+	Concurrency               int    `yaml:"concurrency"`
+	DigestModel               string `yaml:"digest_model"`
+	DigestMaxChars            int    `yaml:"digest_max_chars"`
+	CoordinatorModel          string `yaml:"coordinator_model"`
+	ReduceModel               string `yaml:"reduce_model"`
+	CoordinatorMaxInputTokens int    `yaml:"coordinator_max_input_tokens"`
 }
 
 type Telegram struct {
@@ -121,7 +136,26 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// validate checks cross-field invariants that cannot be defaulted.
+func (c *Config) validate() error {
+	if c.LegalReview.Enabled {
+		if c.LegalReview.DigestModel == "" {
+			return fmt.Errorf("config: legal_review.digest_model is required when legal_review.enabled is true")
+		}
+		if c.LegalReview.CoordinatorModel == "" {
+			return fmt.Errorf("config: legal_review.coordinator_model is required when legal_review.enabled is true")
+		}
+		if c.LegalReview.ReduceModel == "" {
+			return fmt.Errorf("config: legal_review.reduce_model is required when legal_review.enabled is true")
+		}
+	}
+	return nil
 }
 
 func (c *Config) setDefaults() {
@@ -190,5 +224,20 @@ func (c *Config) setDefaults() {
 	}
 	if c.Memory.DedupThreshold == 0 {
 		c.Memory.DedupThreshold = 0.15
+	}
+	// LegalReview numeric defaults apply only when the feature is enabled.
+	if c.LegalReview.Enabled {
+		if c.LegalReview.MaxFiles == 0 {
+			c.LegalReview.MaxFiles = 60
+		}
+		if c.LegalReview.Concurrency == 0 {
+			c.LegalReview.Concurrency = 4
+		}
+		if c.LegalReview.DigestMaxChars == 0 {
+			c.LegalReview.DigestMaxChars = 48000
+		}
+		if c.LegalReview.CoordinatorMaxInputTokens == 0 {
+			c.LegalReview.CoordinatorMaxInputTokens = 80000
+		}
 	}
 }
