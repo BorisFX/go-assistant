@@ -2,6 +2,8 @@ package legalreview
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,5 +101,84 @@ func TestOrchestrator_HappyPathPreservesOrder(t *testing.T) {
 		if rev.got[i].Path != p {
 			t.Fatalf("order not preserved at %d: want %s, got %s", i, p, rev.got[i].Path)
 		}
+	}
+}
+
+// Падение извлечения/выжимки на одном документе не валит пачку: проблемный
+// документ уходит координатору как «не прочитан» (пустой Text, путь сохранён),
+// остальные — нормально.
+func TestOrchestrator_WorkerFailureMarkedUnread(t *testing.T) {
+	ext := &fakeExtractor{errs: map[string]error{"/d/bad.pdf": errors.New("ocr down")}}
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(ext, &fakeDigester{}, rev, 3)
+
+	paths := []string{"/d/ok1.pdf", "/d/bad.pdf", "/d/ok2.pdf"}
+	if _, err := o.Review(context.Background(), paths); err != nil {
+		t.Fatalf("batch must survive one failure: %v", err)
+	}
+	if len(rev.got) != 3 {
+		t.Fatalf("want 3 digests passed to coordinator, got %d", len(rev.got))
+	}
+	if rev.got[1].Path != "/d/bad.pdf" || strings.TrimSpace(rev.got[1].Text) != "" {
+		t.Fatalf("failed doc must be unread placeholder, got %+v", rev.got[1])
+	}
+	if rev.got[0].Text == "" || rev.got[2].Text == "" {
+		t.Fatalf("healthy docs must still be digested")
+	}
+}
+
+// Digester-ошибка (а не extractor) тоже даёт «не прочитан».
+func TestOrchestrator_DigestFailureMarkedUnread(t *testing.T) {
+	dig := &fakeDigester{errs: map[string]error{"/d/x.pdf": errors.New("llm down")}}
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(&fakeExtractor{}, dig, rev, 2)
+	if _, err := o.Review(context.Background(), []string{"/d/x.pdf", "/d/y.pdf"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if strings.TrimSpace(rev.got[0].Text) != "" {
+		t.Fatalf("digest-failed doc must be unread, got %+v", rev.got[0])
+	}
+}
+
+// Если НИ ОДИН документ не прочитан — координатор не зовётся, возвращается ошибка.
+func TestOrchestrator_AllFailedDoesNotCallCoordinator(t *testing.T) {
+	ext := &fakeExtractor{errs: map[string]error{
+		"/d/a.pdf": errors.New("x"), "/d/b.pdf": errors.New("y"),
+	}}
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(ext, &fakeDigester{}, rev, 2)
+	if _, err := o.Review(context.Background(), []string{"/d/a.pdf", "/d/b.pdf"}); err == nil {
+		t.Fatalf("want error when nothing could be read")
+	}
+	if rev.called {
+		t.Fatalf("coordinator must NOT be called when all docs failed")
+	}
+}
+
+// Семафор реально ограничивает число одновременных воркеров.
+func TestOrchestrator_BoundedConcurrency(t *testing.T) {
+	dig := &fakeDigester{}
+	o := NewOrchestrator(&fakeExtractor{}, dig, &fakeReviewer{}, 2)
+	paths := []string{"/1", "/2", "/3", "/4", "/5"}
+	if _, err := o.Review(context.Background(), paths); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if dig.maxSeen > 2 {
+		t.Fatalf("concurrency exceeded limit: saw %d in flight, limit 2", dig.maxSeen)
+	}
+}
+
+// Нулевая конкуррентность не должна порождать дедлок (семафор размера 0).
+func TestOrchestrator_ZeroConcurrencyDoesNotDeadlock(t *testing.T) {
+	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, &fakeReviewer{}, 0)
+	done := make(chan struct{})
+	go func() {
+		_, _ = o.Review(context.Background(), []string{"/a", "/b", "/c"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("zero concurrency deadlocked — default must apply")
 	}
 }
