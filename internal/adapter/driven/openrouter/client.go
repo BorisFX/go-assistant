@@ -56,9 +56,24 @@ type RequestBody struct {
 	Model       string       `json:"model"`
 	Messages    []APIMessage `json:"messages"`
 	Tools       []APITool    `json:"tools,omitempty"`
+	Plugins     []Plugin     `json:"plugins,omitempty"`
 	MaxTokens   int          `json:"max_tokens,omitempty"`
 	Temperature float64      `json:"temperature,omitempty"`
 	Stream      bool         `json:"stream,omitempty"`
+}
+
+// Plugin configures an OpenRouter request-time plugin. The only one used here is
+// "file-parser", which runs a server-side engine over an attached PDF.
+type Plugin struct {
+	ID  string         `json:"id"`
+	PDF *PDFEngineSpec `json:"pdf,omitempty"`
+}
+
+// PDFEngineSpec selects the file-parser engine: "mistral-ocr" (scans, paid),
+// "cloudflare-ai" (free general parser), or "native" (native-file models).
+// Note: "pdf-text" is deprecated and silently redirects to "cloudflare-ai".
+type PDFEngineSpec struct {
+	Engine string `json:"engine"`
 }
 
 type APIMessage struct {
@@ -69,10 +84,17 @@ type APIMessage struct {
 }
 
 type ContentPart struct {
-	Type         string        `json:"type"` // "text" or "image_url"
+	Type         string        `json:"type"` // "text", "image_url" or "file"
 	Text         string        `json:"text,omitempty"`
 	ImageURL     *ImageURL     `json:"image_url,omitempty"`
+	File         *FilePart     `json:"file,omitempty"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+// FilePart carries a base64 data-URL PDF for the file-parser plugin.
+type FilePart struct {
+	Filename string `json:"filename"`
+	FileData string `json:"file_data"` // "data:application/pdf;base64,..."
 }
 
 type CacheControl struct {
