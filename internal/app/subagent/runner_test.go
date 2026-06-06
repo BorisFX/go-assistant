@@ -219,3 +219,51 @@ func TestRunnerDropsToolsOnFinalTurn(t *testing.T) {
 		t.Errorf("final turn must withdraw tools, got %d", len(llm.calls[1].Tools))
 	}
 }
+
+func TestRunnerMaxTurnsOneWithholdsTools(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"ok":true}`}
+	llm := &fakeLLM{responses: []*output.LLMResponse{{Content: "answer"}}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha))
+
+	got, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"alpha"},
+		MaxTurns:  1,
+	}, "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "answer" {
+		t.Errorf("got %q, want %q", got, "answer")
+	}
+	if len(llm.calls) != 1 || len(llm.calls[0].Tools) != 0 {
+		t.Errorf("MaxTurns=1 must withhold tools on the only turn, got calls=%d", len(llm.calls))
+	}
+}
+
+func TestRunnerBudgetExhaustedReturnsError(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"ok":true}`}
+	// Model keeps requesting a tool even on the final tools-withdrawn turn → no text answer.
+	llm := &fakeLLM{responses: []*output.LLMResponse{
+		{ToolCalls: []entity.ToolCall{{ID: "c1", Name: "alpha", Args: "{}"}}},
+		{ToolCalls: []entity.ToolCall{{ID: "c2", Name: "alpha", Args: "{}"}}},
+	}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha))
+
+	_, err := r.Run(context.Background(), subagent.Config{
+		Model: "m", ToolNames: []string{"alpha"}, MaxTurns: 2,
+	}, "task")
+	if err == nil {
+		t.Fatal("want error when budget exhausted without a text answer, got nil")
+	}
+}
+
+func TestRunnerNilResponseErrors(t *testing.T) {
+	llm := &fakeLLM{responses: []*output.LLMResponse{nil}}
+	r := subagent.NewRunner(llm, newRegistry(t))
+
+	_, err := r.Run(context.Background(), subagent.Config{Model: "m"}, "task")
+	if err == nil {
+		t.Fatal("want error on nil llm response, got nil")
+	}
+}

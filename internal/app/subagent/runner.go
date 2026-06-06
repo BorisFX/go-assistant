@@ -83,6 +83,9 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		if err != nil {
 			return "", fmt.Errorf("subagent llm chat (turn %d): %w", turn, err)
 		}
+		if resp == nil {
+			return "", fmt.Errorf("subagent llm returned nil response (turn %d)", turn)
+		}
 		if len(resp.ToolCalls) == 0 {
 			return resp.Content, nil
 		}
@@ -96,7 +99,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 			messages = append(messages, r.runTool(ctx, allowed, tc))
 		}
 	}
-	return resp.Content, nil
+	return "", fmt.Errorf("subagent: turn budget (%d) exhausted without a final answer", cfg.MaxTurns)
 }
 
 // loadTools resolves the granted tool names to their schemas. An unknown name is
