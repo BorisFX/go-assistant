@@ -78,3 +78,64 @@ func TestBuildPDFBody_NoEngineOmitsPlugin(t *testing.T) {
 		t.Fatalf("want no plugins when engine empty, got %v", body.Plugins)
 	}
 }
+
+func TestPagesFromAnnotations(t *testing.T) {
+	respJSON := `{
+		"choices": [{
+			"message": {
+				"content": "ack",
+				"annotations": [{
+					"type": "file",
+					"file": {
+						"name": "doc.pdf",
+						"content": [
+							{"type": "text", "text": "page one text"},
+							{"type": "text", "text": "page two text"}
+						]
+					}
+				}]
+			}
+		}],
+		"usage": {"prompt_tokens": 10, "completion_tokens": 1}
+	}`
+
+	pages, err := pagesFromAnnotations([]byte(respJSON))
+	if err != nil {
+		t.Fatalf("pagesFromAnnotations: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("want 2 pages, got %d", len(pages))
+	}
+	if pages[0].Number != 1 || pages[0].Text != "page one text" {
+		t.Fatalf("page 1 mismatch: %+v", pages[0])
+	}
+	if pages[1].Number != 2 || pages[1].Text != "page two text" {
+		t.Fatalf("page 2 mismatch: %+v", pages[1])
+	}
+}
+
+func TestPagesFromContent_Vision(t *testing.T) {
+	respJSON := `{
+		"choices": [{"message": {"content": "Штамп: ООО Ромашка. Площадь 120 м2."}}],
+		"usage": {"prompt_tokens": 500, "completion_tokens": 40}
+	}`
+
+	pages, err := pagesFromContent([]byte(respJSON))
+	if err != nil {
+		t.Fatalf("pagesFromContent: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("want 1 page, got %d", len(pages))
+	}
+	if pages[0].Number != 1 || pages[0].Text == "" {
+		t.Fatalf("vision page mismatch: %+v", pages[0])
+	}
+}
+
+func TestPagesFromAnnotations_NoFileAnnotation(t *testing.T) {
+	respJSON := `{"choices":[{"message":{"content":"ack","annotations":[]}}],"usage":{}}`
+	_, err := pagesFromAnnotations([]byte(respJSON))
+	if err == nil {
+		t.Fatalf("want error when no file annotation present")
+	}
+}
