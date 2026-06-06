@@ -114,8 +114,100 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 	return out, nil
 }
 
-// fitToBudget ужимает выжимки под бюджет координатора иерархическим reduce.
-// Полная реализация — Задача 3; пока пропускаем вход без изменений.
-func (c *Coordinator) fitToBudget(_ context.Context, _ string, digests []Digest) ([]Digest, error) {
-	return digests, nil
+const reduceSystemPrompt = `Ты сжимаешь группу выжимок документов в ОДНУ компактную выжимку для последующей юридической проверки. Сохрани ВСЕ юридически значимые факты с дословными цитатами и ссылками «(файл X, стр. N)». Не делай юридических выводов. Не теряй данные — только убирай дублирование и воду. Формат: список фактов с цитатами и привязкой к файлу/странице.`
+
+// fitToBudget ужимает выжимки под бюджет координатора. Пока вход (системный
+// промпт + выжимки) превышает бюджет и есть что группировать — гоняем дешёвый
+// reduce-проход «выжимка-выжимок». Гарантированно завершается: если проход не
+// уменьшил список (одна выжимка крупнее бюджета), возвращаем как есть — Sonnet
+// получит максимально сжатый вход, что лучше отказа.
+func (c *Coordinator) fitToBudget(ctx context.Context, sys string, digests []Digest) ([]Digest, error) {
+	base := estimateTokens(sys)
+	for {
+		if base+estimateTokens(formatDigests(digests)) <= c.maxInputTokens || len(digests) <= 1 {
+			return digests, nil
+		}
+		reduced, err := c.reducePass(ctx, digests)
+		if err != nil {
+			return nil, err
+		}
+		if len(reduced) >= len(digests) { // не сходится — не зацикливаемся
+			return reduced, nil
+		}
+		digests = reduced
+	}
+}
+
+// reducePass группирует выжимки по символьному бюджету и сжимает каждую группу
+// из >1 элемента в одну выжимку дешёвой моделью. Группу из одного элемента не
+// трогаем (нечего сливать).
+func (c *Coordinator) reducePass(ctx context.Context, digests []Digest) ([]Digest, error) {
+	// Символьный бюджет на группу ≈ (бюджет − системный префикс) * 4. Пол — 1,
+	// чтобы при недостижимом бюджете каждая выжимка осталась своей группой.
+	tokenBudget := c.maxInputTokens - estimateTokens(c.systemPrompt())
+	charBudget := tokenBudget * 4
+	if charBudget < 1 {
+		charBudget = 1
+	}
+	groups := groupDigests(digests, charBudget)
+	// Когда символьный бюджет ниже одной выжимки, упаковка оставляет одни
+	// одиночки и обычный «слить группу» не уменьшит вход. В этом случае всё
+	// равно гоняем дешёвый reduce по каждой одиночке, чтобы ужать её саму; иначе
+	// reduce не имел бы смысла. Признак — каждая выжимка в своей группе.
+	reduceSingles := len(groups) == len(digests) && len(digests) > 1
+	out := make([]Digest, 0, len(groups))
+	for _, g := range groups {
+		if len(g) == 1 && !reduceSingles {
+			out = append(out, g[0])
+			continue
+		}
+		cfg := subagent.Config{
+			Model:        c.reduceModel,
+			SystemPrompt: reduceSystemPrompt,
+			MaxTurns:     1,
+			Temperature:  0,
+			MaxTokens:    coordinatorMaxTokens,
+		}
+		text, err := c.runner.Run(ctx, cfg, formatDigests(g))
+		if err != nil {
+			return nil, fmt.Errorf("coordinator reduce: %w", err)
+		}
+		out = append(out, Digest{Path: groupLabel(g), Text: strings.TrimSpace(text)})
+	}
+	return out, nil
+}
+
+// groupDigests режет выжимки на группы, чьё суммарное тело не превышает maxChars.
+// Одна выжимка крупнее бюджета получает свою группу (ниже документа не дробим).
+func groupDigests(digests []Digest, maxChars int) [][]Digest {
+	if len(digests) == 0 {
+		return nil
+	}
+	var (
+		groups [][]Digest
+		cur    []Digest
+		curLen int
+	)
+	for _, d := range digests {
+		n := len(d.Text)
+		if len(cur) > 0 && curLen+n > maxChars {
+			groups = append(groups, cur)
+			cur, curLen = nil, 0
+		}
+		cur = append(cur, d)
+		curLen += n
+	}
+	if len(cur) > 0 {
+		groups = append(groups, cur)
+	}
+	return groups
+}
+
+// groupLabel склеивает пути группы в один ярлык для сжатой выжимки.
+func groupLabel(g []Digest) string {
+	paths := make([]string, len(g))
+	for i, d := range g {
+		paths[i] = d.Path
+	}
+	return strings.Join(paths, ", ")
 }
