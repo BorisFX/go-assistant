@@ -89,3 +89,35 @@ func TestRunnerReturnsFinalTextNoTools(t *testing.T) {
 		t.Errorf("unexpected messages: %+v", req.Messages)
 	}
 }
+
+func TestRunnerLoadsOnlyAllowedToolSubset(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"ok":true}`}
+	beta := &fakeTool{name: "beta", result: `{"ok":true}`}
+	llm := &fakeLLM{responses: []*output.LLMResponse{{Content: "done"}}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha, beta))
+
+	_, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"alpha"},
+	}, "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	req := llm.calls[0]
+	if len(req.Tools) != 1 || req.Tools[0].Name != "alpha" {
+		t.Errorf("want only alpha tool, got %+v", req.Tools)
+	}
+}
+
+func TestRunnerErrorsOnUnknownTool(t *testing.T) {
+	llm := &fakeLLM{responses: []*output.LLMResponse{{Content: "done"}}}
+	r := subagent.NewRunner(llm, newRegistry(t))
+
+	_, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"missing"},
+	}, "task")
+	if err == nil {
+		t.Fatal("want error for unknown tool, got nil")
+	}
+}

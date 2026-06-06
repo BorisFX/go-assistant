@@ -46,6 +46,11 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		cfg.MaxTokens = defaultMaxTokens
 	}
 
+	tools, err := r.loadTools(cfg.ToolNames)
+	if err != nil {
+		return "", err
+	}
+
 	messages := []output.LLMMessage{
 		{Role: entity.RoleSystem, Content: cfg.SystemPrompt},
 		{Role: entity.RoleUser, Content: task},
@@ -53,6 +58,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 
 	resp, err := r.llm.Chat(ctx, output.LLMRequest{
 		Messages:    messages,
+		Tools:       tools,
 		Model:       cfg.Model,
 		MaxTokens:   cfg.MaxTokens,
 		Temperature: cfg.Temperature,
@@ -61,4 +67,17 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		return "", fmt.Errorf("subagent llm chat: %w", err)
 	}
 	return resp.Content, nil
+}
+
+// loadTools resolves the granted tool names to their schemas. An unknown name is
+// a configuration error — fail loudly rather than silently dropping the tool.
+func (r *Runner) loadTools(names []string) ([]entity.ToolDefinition, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	defs, err := r.registry.LoadSchemas(names)
+	if err != nil {
+		return nil, fmt.Errorf("load subagent tools: %w", err)
+	}
+	return defs, nil
 }
