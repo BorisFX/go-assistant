@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/domain/valueobject"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
@@ -328,6 +329,13 @@ func truncate(s string, maxLen int) string {
 }
 
 func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
+	if b.legalReview != nil {
+		if folder, ok := legalreview.ParseReviewFolder(msg.Text); ok {
+			b.handleLegalReview(msg, folder)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -354,6 +362,61 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 
 	slog.Info("sending response", "chars", len([]rune(resp.Content)))
 	stream.SendChunked(resp.Content)
+}
+
+// handleLegalReview runs the "разбери папку X" intent: collect a Mail.ru folder,
+// orchestrate per-document digests, then a premium coordinator review. Long-form
+// reports are delivered as a Markdown file; short ones as chunked text.
+func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	chatID := msg.Chat.ID
+	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
+
+	paths, err := b.legalReview.cloud.CollectFolder(ctx, folder, legalreview.ReviewExtensions, b.legalReview.maxFiles)
+	if err != nil {
+		// Collect errors are user-meaningful (e.g. the maxFiles guard message).
+		b.sendText(chatID, err.Error())
+		return
+	}
+
+	b.sendText(chatID, fmt.Sprintf("Анализирую %d документов…", len(paths)))
+
+	report, err := b.legalReview.orch.Review(ctx, paths)
+	if err != nil {
+		b.sendText(chatID, "Не удалось провести ревью: "+err.Error())
+		return
+	}
+
+	if len(report) > 3500 {
+		os.MkdirAll(b.filesDir, 0755)
+		fileName := fmt.Sprintf("Юр-ревью-%s-%d.md", sanitizeFolderName(folder), time.Now().Unix())
+		filePath := filepath.Join(b.filesDir, fileName)
+		if err := os.WriteFile(filePath, []byte(report), 0644); err != nil {
+			slog.Error("failed to write legal review report", "error", err, "path", filePath)
+			// Fall back to chunked text so the work isn't lost.
+			NewDraftStream(b.api, chatID, b.streamMode).SendChunked(report)
+			return
+		}
+		b.sendFile(chatID, filePath, fmt.Sprintf("Юр-ревью папки «%s»", folder))
+		return
+	}
+
+	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(report)
+}
+
+// sendText sends a plain text message, ignoring Markdown parsing errors.
+func (b *Bot) sendText(chatID int64, text string) {
+	if _, err := b.api.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+		slog.Warn("failed to send text", "error", err)
+	}
+}
+
+// sanitizeFolderName makes a folder name safe for use in a file name.
+func sanitizeFolderName(folder string) string {
+	repl := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
+	return strings.Trim(repl.Replace(folder), "_")
 }
 
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {

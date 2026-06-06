@@ -14,9 +14,9 @@ func TestParseReviewFolder(t *testing.T) {
 		{"разбери папку", "", false},
 	}
 	for _, c := range cases {
-		got, ok := parseReviewFolder(c.in)
+		got, ok := ParseReviewFolder(c.in)
 		if ok != c.ok || got != c.want {
-			t.Fatalf("parseReviewFolder(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.ok)
+			t.Fatalf("ParseReviewFolder(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.ok)
 		}
 	}
 }

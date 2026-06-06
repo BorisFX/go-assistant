@@ -23,7 +23,10 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driving/telegram"
 	"github.com/olegmatyakubov/go-assistant/internal/app/chat"
 	cronpkg "github.com/olegmatyakubov/go-assistant/internal/app/cron"
+	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
+	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
+	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
@@ -196,6 +199,31 @@ func main() {
 
 	// Wire cron send function to bot
 	cronSendFunc = bot.SendToOwner
+
+	// Legal-document-review pipeline (Yuri instance only; off by default).
+	if cfg.LegalReview.Enabled {
+		if mailRuCloud == nil {
+			slog.Error("legal_review enabled but mail.ru cloud is not configured")
+			os.Exit(1)
+		}
+		normativy, err := os.ReadFile(cfg.LegalReview.NormativyPath)
+		if err != nil {
+			slog.Error("legal_review enabled but normativy file is unreadable",
+				"path", cfg.LegalReview.NormativyPath, "error", err)
+			os.Exit(1)
+		}
+		extractRouter := extraction.NewRouter(llmClient,
+			extraction.WithLocal(extraction.NewLocalExtractor()),
+			extraction.WithVisionModel(cfg.LLM.Vision.Model))
+		runner := subagent.NewRunner(llmClient, registry)
+		worker := legalreview.NewDigestWorker(runner, cfg.LegalReview.DigestModel, cfg.LegalReview.DigestMaxChars)
+		coord := legalreview.NewCoordinator(runner,
+			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
+			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
+		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency)
+		bot.EnableLegalReview(orch, mailRuCloud, cfg.LegalReview.MaxFiles)
+		slog.Info("legal-review pipeline enabled", "max_files", cfg.LegalReview.MaxFiles)
+	}
 
 	// Dashboard FS
 	var dashboardFS fs.FS

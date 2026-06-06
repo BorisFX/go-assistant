@@ -8,8 +8,8 @@ import (
 
 var reviewFolderRe = regexp.MustCompile(`(?i)^\s*разбери\s+папку\s+(.+?)\s*$`)
 
-// parseReviewFolder extracts the folder name/path from the "разбери папку X" intent.
-func parseReviewFolder(text string) (string, bool) {
+// ParseReviewFolder extracts the folder name/path from the "разбери папку X" intent.
+func ParseReviewFolder(text string) (string, bool) {
 	m := reviewFolderRe.FindStringSubmatch(text)
 	if m == nil {
 		return "", false
@@ -37,5 +37,5 @@ func filterByExt(paths, exts []string) []string {
 	return out
 }
 
-// reviewExtensions — document types we review (design: PDF + office).
-var reviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx"}
+// ReviewExtensions — document types we review (design: PDF + office).
+var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx"}

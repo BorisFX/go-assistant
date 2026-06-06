@@ -11,9 +11,19 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/openrouter"
 	"github.com/olegmatyakubov/go-assistant/internal/app/cron"
+	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
+	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 )
+
+// legalReviewDeps holds the optional legal-document-review pipeline. A nil
+// *legalReviewDeps on the Bot means the feature is off (Oleg's instance).
+type legalReviewDeps struct {
+	orch     *legalreview.Orchestrator
+	cloud    *builtin.MailRuCloud
+	maxFiles int
+}
 
 type Bot struct {
 	api           *tgbotapi.BotAPI
@@ -31,6 +41,7 @@ type Bot struct {
 	filesDir     string
 	streamMode   StreamMode
 	cancel       context.CancelFunc
+	legalReview  *legalReviewDeps
 }
 
 type BotConfig struct {
@@ -80,6 +91,12 @@ func NewBot(
 	})
 
 	return b, nil
+}
+
+// EnableLegalReview turns on the legal-document-review pipeline for this bot
+// instance. Call once after NewBot, only when cfg.LegalReview.Enabled.
+func (b *Bot) EnableLegalReview(orch *legalreview.Orchestrator, cloud *builtin.MailRuCloud, maxFiles int) {
+	b.legalReview = &legalReviewDeps{orch: orch, cloud: cloud, maxFiles: maxFiles}
 }
 
 func (b *Bot) authorize(update tgbotapi.Update) bool {
