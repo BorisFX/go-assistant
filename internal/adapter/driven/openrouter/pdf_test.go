@@ -139,3 +139,39 @@ func TestPagesFromAnnotations_NoFileAnnotation(t *testing.T) {
 		t.Fatalf("want error when no file annotation present")
 	}
 }
+
+// mistral-ocr commonly returns the whole document as one markdown blob rather
+// than per-page items; that must yield a single chunk, not a crash or 0 pages.
+func TestPagesFromAnnotations_SingleBlob(t *testing.T) {
+	respJSON := `{
+		"choices": [{
+			"message": {
+				"content": "ack",
+				"annotations": [{
+					"type": "file",
+					"file": {
+						"name": "scan.pdf",
+						"content": [{"type": "text", "text": "## Стр.1\nфул текст\n## Стр.2\nещё"}]
+					}
+				}]
+			}
+		}]
+	}`
+	pages, err := pagesFromAnnotations([]byte(respJSON))
+	if err != nil {
+		t.Fatalf("pagesFromAnnotations: %v", err)
+	}
+	if len(pages) != 1 || pages[0].Number != 1 {
+		t.Fatalf("want one chunk numbered 1, got %+v", pages)
+	}
+}
+
+func TestBuildPDFBody_RejectsOversizeFile(t *testing.T) {
+	path := writeTempPDF(t, "small")
+	if err := checkPDFSize(path, 1); err == nil {
+		t.Fatalf("want error when file exceeds size limit")
+	}
+	if err := checkPDFSize(path, 1<<20); err != nil {
+		t.Fatalf("unexpected error under limit: %v", err)
+	}
+}

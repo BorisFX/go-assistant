@@ -12,11 +12,32 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
+// maxPDFBytes caps the size of a single PDF we will base64 into a request body.
+// The whole file is held in memory (~1.33x once encoded) and the legal pipeline
+// processes many large scans concurrently, so an oversized file must surface as
+// an error (document marked "не прочитан") instead of risking an OOM.
+const maxPDFBytes = 50 << 20 // 50 MiB
+
+// checkPDFSize fails if the file at path is larger than max bytes.
+func checkPDFSize(path string, max int64) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat pdf %q: %w", path, err)
+	}
+	if info.Size() > max {
+		return fmt.Errorf("pdf %q too large: %d bytes > %d limit", path, info.Size(), max)
+	}
+	return nil
+}
+
 // buildPDFBody assembles a one-shot chat request that attaches a PDF as a
 // file-input content part and (optionally) enables the file-parser plugin with
 // the chosen engine. An empty engine sends the PDF natively (no plugin) for
 // native-file vision models like Gemini.
 func buildPDFBody(model, path, engine, prompt string) (RequestBody, error) {
+	if err := checkPDFSize(path, maxPDFBytes); err != nil {
+		return RequestBody{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return RequestBody{}, fmt.Errorf("read pdf %q: %w", path, err)
@@ -62,9 +83,12 @@ type annotatedResponse struct {
 	} `json:"choices"`
 }
 
-// pagesFromAnnotations turns file-parser annotations into ordered text pages.
-// Each text content item becomes one page; image items are skipped (OCR text is
-// what we keep). Errors if the response carries no parsed file content.
+// pagesFromAnnotations turns file-parser annotations into ordered text chunks.
+// Number is the 1-based ordinal of the returned text item, NOT a guaranteed
+// physical page: engines like mistral-ocr may return the whole document as one
+// markdown blob (→ a single chunk numbered 1) or as several items that need not
+// map one-to-one to physical pages. Image items are skipped (OCR text is what we
+// keep). Errors if the response carries no parsed file content.
 func pagesFromAnnotations(raw []byte) ([]output.PDFPage, error) {
 	var resp annotatedResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {

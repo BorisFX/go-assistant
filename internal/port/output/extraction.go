@@ -2,8 +2,10 @@ package output
 
 import "context"
 
-// PDFPage is one extracted page of a document. Number is the 1-based physical
-// page number, preserved so downstream digests can cite "файл X, стр. N".
+// PDFPage is one extracted chunk of a document. Number is a 1-based ordinal
+// kept so downstream digests can cite "файл X, стр. N". For pdftotext it is the
+// physical page number; for OCR/vision engines it may be a chunk index, since
+// those engines do not always report physical pages.
 type PDFPage struct {
 	Number int
 	Text   string
