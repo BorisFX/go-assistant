@@ -54,6 +54,11 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		return "", err
 	}
 
+	allowed := make(map[string]bool, len(cfg.ToolNames))
+	for _, name := range cfg.ToolNames {
+		allowed[name] = true
+	}
+
 	messages := []output.LLMMessage{
 		{Role: entity.RoleSystem, Content: cfg.SystemPrompt},
 		{Role: entity.RoleUser, Content: task},
@@ -81,7 +86,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 			ToolCalls: resp.ToolCalls,
 		})
 		for _, tc := range resp.ToolCalls {
-			messages = append(messages, r.runTool(ctx, tc))
+			messages = append(messages, r.runTool(ctx, allowed, tc))
 		}
 	}
 	return resp.Content, nil
@@ -100,10 +105,21 @@ func (r *Runner) loadTools(names []string) ([]entity.ToolDefinition, error) {
 	return defs, nil
 }
 
-// runTool executes one tool call and returns the tool message to feed back to
-// the model. Tool errors are reported to the model (not returned as Go errors)
-// so the subagent can recover instead of aborting the whole run.
-func (r *Runner) runTool(ctx context.Context, tc entity.ToolCall) output.LLMMessage {
+// runTool executes one tool call inside the subagent sandbox and returns the
+// tool message to feed back to the model. A call to a tool outside the granted
+// subset is refused (not executed) so a subagent cannot escape the toolset its
+// caller granted it. Tool errors are reported to the model (not returned as Go
+// errors) so the subagent can recover instead of aborting the whole run.
+func (r *Runner) runTool(ctx context.Context, allowed map[string]bool, tc entity.ToolCall) output.LLMMessage {
+	if !allowed[tc.Name] {
+		slog.Warn("subagent: refused disallowed tool", "tool", tc.Name)
+		return output.LLMMessage{
+			Role:       entity.RoleTool,
+			Content:    fmt.Sprintf("Error: tool %q is not permitted for this subagent", tc.Name),
+			ToolCallID: tc.ID,
+		}
+	}
+
 	tool, err := r.registry.GetTool(tc.Name)
 	if err != nil {
 		return output.LLMMessage{

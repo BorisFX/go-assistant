@@ -3,6 +3,7 @@ package subagent_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
@@ -153,5 +154,40 @@ func TestRunnerExecutesToolThenReturnsFinalText(t *testing.T) {
 	}
 	if !foundResult {
 		t.Errorf("tool result not fed back to model: %+v", second.Messages)
+	}
+}
+
+func TestRunnerRefusesDisallowedTool(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"ok":true}`}
+	bash := &fakeTool{name: "bash", result: `{"ran":true}`}
+	llm := &fakeLLM{responses: []*output.LLMResponse{
+		{ToolCalls: []entity.ToolCall{{ID: "c1", Name: "bash", Args: "{}"}}},
+		{Content: "answer"},
+	}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha, bash))
+
+	got, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"alpha"}, // bash registered globally but NOT granted here
+		MaxTurns:  5,
+	}, "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "answer" {
+		t.Errorf("got %q, want %q", got, "answer")
+	}
+	if bash.calls != 0 {
+		t.Errorf("disallowed bash tool must not run, ran %d times", bash.calls)
+	}
+	second := llm.calls[1]
+	refused := false
+	for _, m := range second.Messages {
+		if m.Role == entity.RoleTool && m.ToolCallID == "c1" && strings.Contains(m.Content, "not permitted") {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Errorf("expected refusal message fed back, got %+v", second.Messages)
 	}
 }
