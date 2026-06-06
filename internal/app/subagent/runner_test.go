@@ -121,3 +121,37 @@ func TestRunnerErrorsOnUnknownTool(t *testing.T) {
 		t.Fatal("want error for unknown tool, got nil")
 	}
 }
+
+func TestRunnerExecutesToolThenReturnsFinalText(t *testing.T) {
+	alpha := &fakeTool{name: "alpha", result: `{"value":42}`}
+	llm := &fakeLLM{responses: []*output.LLMResponse{
+		{ToolCalls: []entity.ToolCall{{ID: "c1", Name: "alpha", Args: "{}"}}},
+		{Content: "final digest"},
+	}}
+	r := subagent.NewRunner(llm, newRegistry(t, alpha))
+
+	got, err := r.Run(context.Background(), subagent.Config{
+		Model:     "m",
+		ToolNames: []string{"alpha"},
+		MaxTurns:  5,
+	}, "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "final digest" {
+		t.Errorf("got %q, want %q", got, "final digest")
+	}
+	if alpha.calls != 1 {
+		t.Errorf("want alpha executed once, got %d", alpha.calls)
+	}
+	second := llm.calls[1]
+	foundResult := false
+	for _, m := range second.Messages {
+		if m.Role == entity.RoleTool && m.ToolCallID == "c1" && m.Content == `{"value":42}` {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Errorf("tool result not fed back to model: %+v", second.Messages)
+	}
+}
