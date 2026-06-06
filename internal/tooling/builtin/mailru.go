@@ -760,6 +760,10 @@ func extAllowed(path string, exts []string) bool {
 // matches the allowed extensions, preserving index order. Pure (no network), so
 // it carries the filtering unit tests for CollectFolder.
 func filterIndexByPrefixExt(entries []indexEntry, prefix string, exts []string) []string {
+	// Match on a folder boundary so "/Объект1" does not also pull in "/Объект10".
+	if prefix != "" {
+		prefix += "/"
+	}
 	var out []string
 	for _, e := range entries {
 		if e.IsDir {

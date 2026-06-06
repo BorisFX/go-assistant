@@ -65,4 +65,14 @@ func TestFilterIndexByPrefixExt(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("empty prefix want 3 pdf files, got %v", all)
 	}
+
+	// A sibling folder sharing the prefix must NOT be pulled in.
+	sibling := []indexEntry{
+		{Path: "/Объект1/a.pdf", IsDir: false},
+		{Path: "/Объект10/b.pdf", IsDir: false},
+	}
+	got2 := filterIndexByPrefixExt(sibling, "/Объект1", []string{".pdf"})
+	if len(got2) != 1 || got2[0] != "/Объект1/a.pdf" {
+		t.Fatalf("prefix boundary leaked sibling folder: %v", got2)
+	}
 }
