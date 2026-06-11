@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 type Obsidian struct {
@@ -72,8 +76,101 @@ func (o *Obsidian) delegate(ctx context.Context, command string) (json.RawMessag
 	return o.executor.ExecuteJSON(ctx, command, o.vaultDir, nil)
 }
 
-func (o *Obsidian) search(query string) (json.RawMessage, error) { return nil, fmt.Errorf("not implemented") }
-func (o *Obsidian) read(path string) (json.RawMessage, error)    { return nil, fmt.Errorf("not implemented") }
+const maxReadBytes = 100_000
+
+// resolveInVault joins rel onto vaultDir and rejects escapes.
+func (o *Obsidian) resolveInVault(rel string) (string, error) {
+	abs := filepath.Join(o.vaultDir, filepath.Clean("/"+rel))
+	root, err := filepath.Abs(o.vaultDir)
+	if err != nil {
+		return "", err
+	}
+	full, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	if full != root && !strings.HasPrefix(full, root+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes the vault", rel)
+	}
+	return full, nil
+}
+
+type searchHit struct {
+	Path    string `json:"path"`
+	Snippet string `json:"snippet"`
+}
+
+func (o *Obsidian) search(query string) (json.RawMessage, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("search requires a non-empty query")
+	}
+	q := strings.ToLower(query)
+	var hits []searchHit
+	err := filepath.WalkDir(o.vaultDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		rel, _ := filepath.Rel(o.vaultDir, path)
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		text := string(body)
+		nameMatch := strings.Contains(strings.ToLower(rel), q)
+		idx := strings.Index(strings.ToLower(text), q)
+		if !nameMatch && idx < 0 {
+			return nil
+		}
+		snippet := ""
+		if idx >= 0 {
+			start := idx - 40
+			if start < 0 {
+				start = 0
+			}
+			end := idx + 80
+			if end > len(text) {
+				end = len(text)
+			}
+			snippet = strings.ReplaceAll(text[start:end], "\n", " ")
+		}
+		hits = append(hits, searchHit{Path: rel, Snippet: snippet})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search vault: %w", err)
+	}
+	return json.Marshal(map[string]any{"query": query, "hits": hits})
+}
+
+func (o *Obsidian) read(rel string) (json.RawMessage, error) {
+	if strings.TrimSpace(rel) == "" {
+		return nil, fmt.Errorf("read requires a path")
+	}
+	full, err := o.resolveInVault(rel)
+	if err != nil {
+		return nil, err
+	}
+	body, err := os.ReadFile(full)
+	if err != nil {
+		return nil, fmt.Errorf("read note: %w", err)
+	}
+	truncated := false
+	if len(body) > maxReadBytes {
+		body = body[:maxReadBytes]
+		truncated = true
+	}
+	return json.Marshal(map[string]any{"path": rel, "content": string(body), "truncated": truncated})
+}
+
 func (o *Obsidian) ingest(ctx context.Context, content string) (json.RawMessage, error) {
 	return nil, fmt.Errorf("not implemented")
 }
