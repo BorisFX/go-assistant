@@ -3,7 +3,9 @@ package legalreview
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
@@ -98,9 +100,14 @@ func (w *DigestWorker) Digest(ctx context.Context, doc extraction.Result) (Diges
 		Temperature:  0,
 		MaxTokens:    digestMaxTokens,
 	}
+	start := time.Now()
+	batches := chunkPages(doc.Pages, w.maxChars)
 	var parts []string
-	for i, batch := range chunkPages(doc.Pages, w.maxChars) {
-		out, err := w.runner.Run(ctx, cfg, buildDigestTask(doc.Path, batch))
+	inChars := 0
+	for i, batch := range batches {
+		task := buildDigestTask(doc.Path, batch)
+		inChars += len(task)
+		out, err := w.runner.Run(ctx, cfg, task)
 		if err != nil {
 			return Digest{}, fmt.Errorf("digest %q batch %d: %w", doc.Path, i, err)
 		}
@@ -109,7 +116,13 @@ func (w *DigestWorker) Digest(ctx context.Context, doc extraction.Result) (Diges
 		}
 		parts = append(parts, strings.TrimSpace(out))
 	}
-	return Digest{Path: doc.Path, Method: doc.Method, Text: strings.Join(parts, "\n\n")}, nil
+	text := strings.Join(parts, "\n\n")
+	slog.Info("legalreview digest",
+		"path", doc.Path, "model", w.model, "method", doc.Method,
+		"pages", len(doc.Pages), "batches", len(batches),
+		"in_chars", inChars, "out_chars", len(text),
+		"ms", time.Since(start).Milliseconds())
+	return Digest{Path: doc.Path, Method: doc.Method, Text: text}, nil
 }
 
 // buildDigestTask renders a batch of pages into the subagent task, keeping page

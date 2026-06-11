@@ -2,7 +2,7 @@
 # Deploy go-assistant to Linode server
 set -euo pipefail
 
-SERVER="root@172.104.56.5"
+SERVER="root@194.195.252.68"
 SSH_KEY="$HOME/.ssh/cryptoai_linode"
 REMOTE_DIR="/opt/assistant"
 
@@ -53,7 +53,7 @@ echo "Service installed. Configure /etc/assistant.env and /opt/assistant/config.
 REMOTE
 
 echo "Done! Next steps:"
-echo "1. SSH to server: ssh -i ~/.ssh/cryptoai_linode root@172.104.56.5"
+echo "1. SSH to server: ssh -i ~/.ssh/cryptoai_linode root@194.195.252.68"
 echo "2. Create /etc/assistant.env with tokens"
 echo "3. Create /opt/assistant/config.yaml"
 echo "4. systemctl enable --now assistant"

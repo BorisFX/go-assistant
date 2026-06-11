@@ -3,7 +3,9 @@ package legalreview
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
 )
@@ -45,7 +47,17 @@ const coordinatorSystemPrompt = `Ты — ведущий юрист-коорди
    - АНАЛИЗ ЗАМЕЧАНИЯ (для замечаний Росреестра): замечание регистратора → данные техплана → данные ЕГРН/разрешения → расхождение → причина → что делать.
    - ЗАКЛЮЧЕНИЕ ПО ТЕХПЛАНУ: описание / параметры / замечания / рекомендации.
    - ДОРОЖНАЯ КАРТА объекта: чеклист стадий.
-6. Пиши по-русски, по делу, без воды.`
+6. Пиши по-русски, по делу, без воды.
+7. ФОРМАТ ДЛЯ TELEGRAM. Отчёт читают в Telegram, он НЕ рендерит Markdown-таблицы и звёздочки. Поэтому строго:
+   - НИКОГДА не используй таблицы из вертикальных палок (строки вида «| ... | ... |») и разделители «|---|---|». Вместо «сводной таблицы замечаний» давай НУМЕРОВАННЫЙ СПИСОК: каждое замечание — отдельным блоком с новой строки.
+   - НЕ используй **двойные звёздочки** и __подчёркивания__ для жирного/курсива — они выводятся сырыми. Для акцента пиши ЗАГЛАВНЫМИ или ставь эмодзи.
+   - Критичность помечай эмодзи: 🔴 критично, 🟠 серьёзно, 🟡 умеренно, 🟢 незначительно, ⬛ нет данных.
+   - Заголовки разделов — простой строкой ЗАГЛАВНЫМИ (можно с эмодзи), без «#» и без «**».
+   - Каждое замечание оформляй блоком, например:
+     «1. 🔴 Площадь здания: 11 915,4 (техплан) vs 11 939,6 (РнС)
+        Документы: TextPart стр. 4–5; РнС стр. 5
+        Вывод: расхождение требует устранения.»
+   Цель — чтобы текст читался как обычное сообщение, без сырой Markdown-разметки.`
 
 const coordinatorMaxTokens = 8192
 
@@ -97,6 +109,14 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 		return "", err
 	}
 
+	body := formatDigests(fitted)
+	start := time.Now()
+	slog.Info("legalreview coordinator start",
+		"model", c.model,
+		"digests_in", len(digests), "digests_fitted", len(fitted),
+		"sys_tokens", estimateTokens(sys), "body_tokens", estimateTokens(body),
+		"budget_tokens", c.maxInputTokens)
+
 	cfg := subagent.Config{
 		Model:        c.model,
 		SystemPrompt: sys,
@@ -104,13 +124,15 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 		Temperature:  0,
 		MaxTokens:    coordinatorMaxTokens,
 	}
-	out, err := c.runner.Run(ctx, cfg, formatDigests(fitted))
+	out, err := c.runner.Run(ctx, cfg, body)
 	if err != nil {
 		return "", fmt.Errorf("coordinator review: %w", err)
 	}
 	if strings.TrimSpace(out) == "" {
 		return "", fmt.Errorf("coordinator: empty report")
 	}
+	slog.Info("legalreview coordinator done",
+		"model", c.model, "report_chars", len(out), "ms", time.Since(start).Milliseconds())
 	return out, nil
 }
 
@@ -127,10 +149,14 @@ func (c *Coordinator) fitToBudget(ctx context.Context, sys string, digests []Dig
 		if base+estimateTokens(formatDigests(digests)) <= c.maxInputTokens || len(digests) <= 1 {
 			return digests, nil
 		}
+		slog.Info("legalreview reduce pass",
+			"model", c.reduceModel, "digests_before", len(digests),
+			"input_tokens", base+estimateTokens(formatDigests(digests)), "budget_tokens", c.maxInputTokens)
 		reduced, err := c.reducePass(ctx, digests)
 		if err != nil {
 			return nil, err
 		}
+		slog.Info("legalreview reduce pass done", "digests_after", len(reduced))
 		if len(reduced) >= len(digests) { // не сходится — не зацикливаемся
 			return reduced, nil
 		}

@@ -372,19 +372,23 @@ func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 	defer cancel()
 
 	chatID := msg.Chat.ID
+	slog.Info("legalreview request", "folder", folder, "chat_id", chatID)
 	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
 
 	paths, err := b.legalReview.cloud.CollectFolder(ctx, folder, legalreview.ReviewExtensions, b.legalReview.maxFiles)
 	if err != nil {
 		// Collect errors are user-meaningful (e.g. the maxFiles guard message).
+		slog.Warn("legalreview collect failed", "folder", folder, "error", err)
 		b.sendText(chatID, err.Error())
 		return
 	}
+	slog.Info("legalreview collected", "folder", folder, "files", len(paths))
 
 	b.sendText(chatID, fmt.Sprintf("Анализирую %d документов…", len(paths)))
 
 	report, err := b.legalReview.orch.Review(ctx, paths)
 	if err != nil {
+		slog.Error("legalreview failed", "folder", folder, "error", err)
 		b.sendText(chatID, "Не удалось провести ревью: "+err.Error())
 		return
 	}

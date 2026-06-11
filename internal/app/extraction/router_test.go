@@ -3,6 +3,8 @@ package extraction
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
@@ -90,6 +92,28 @@ func TestRouter_DenseScanEscalatesToOCR(t *testing.T) {
 	}
 	if remote.visionCalls != 0 {
 		t.Fatalf("vision must not run when dense-scan detected")
+	}
+}
+
+func TestRouter_XMLReadDirectly(t *testing.T) {
+	dir := t.TempDir()
+	xmlPath := filepath.Join(dir, "techplan.xml")
+	if err := os.WriteFile(xmlPath, []byte("<tech><area>120</area></tech>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := &fakeLocal{err: errors.New("pdftotext must not run on xml")}
+	remote := &fakeRemote{}
+	r := NewRouter(remote, WithLocal(local), WithVisionModel("m"))
+
+	res, err := r.Extract(context.Background(), xmlPath)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if res.Method != "text" || len(res.Pages) != 1 || res.Pages[0].Text != "<tech><area>120</area></tech>" {
+		t.Fatalf("unexpected xml result: %+v", res)
+	}
+	if remote.textCalls != 0 || remote.visionCalls != 0 {
+		t.Fatalf("remote must not be called for xml")
 	}
 }
 

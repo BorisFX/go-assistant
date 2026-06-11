@@ -37,5 +37,6 @@ func filterByExt(paths, exts []string) []string {
 	return out
 }
 
-// ReviewExtensions — document types we review (design: PDF + office).
-var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx"}
+// ReviewExtensions — document types we review (design: PDF + office + XML tech
+// plans). XML is read directly as text by the extraction Router.
+var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xml"}

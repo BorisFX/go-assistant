@@ -86,6 +86,12 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		if resp == nil {
 			return "", fmt.Errorf("subagent llm returned nil response (turn %d)", turn)
 		}
+		slog.Info("subagent call",
+			"model", cfg.Model,
+			"turn", turn,
+			"input_tokens", resp.InputTokens,
+			"output_tokens", resp.OutputTokens,
+			"tool_calls", len(resp.ToolCalls))
 		if len(resp.ToolCalls) == 0 {
 			return resp.Content, nil
 		}

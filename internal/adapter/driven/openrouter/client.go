@@ -47,7 +47,10 @@ func New(apiKey, model, fallback string) *Client {
 		fallback: fallback,
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   120 * time.Second,
+			// Reasoning models (e.g. the legal-review coordinator on Sonnet with an
+			// 80k output budget) legitimately generate for several minutes; a 120s
+			// ceiling cut them off mid-body. Per-call deadlines come from context.
+			Timeout: 600 * time.Second,
 		},
 	}
 }
@@ -57,9 +60,17 @@ type RequestBody struct {
 	Messages    []APIMessage `json:"messages"`
 	Tools       []APITool    `json:"tools,omitempty"`
 	Plugins     []Plugin     `json:"plugins,omitempty"`
-	MaxTokens   int          `json:"max_tokens,omitempty"`
-	Temperature float64      `json:"temperature,omitempty"`
-	Stream      bool         `json:"stream,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Temperature float64          `json:"temperature,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
+	Reasoning   *ReasoningConfig `json:"reasoning,omitempty"`
+}
+
+// ReasoningConfig caps the hidden reasoning budget. Reasoning models (Gemini 2.5+,
+// Sonnet) can otherwise spend the entire max_tokens budget on reasoning and return
+// zero visible content. OpenRouter silently ignores this for non-reasoning models.
+type ReasoningConfig struct {
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 // Plugin configures an OpenRouter request-time plugin. The only one used here is
@@ -175,6 +186,15 @@ func BuildRequestBody(model string, req output.LLMRequest) RequestBody {
 		Model:       model,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
+	}
+
+	// Reserve visible-answer budget: cap reasoning at ~1/3 of max_tokens (≤2048),
+	// so a reasoning model can never consume the whole budget on hidden thinking
+	// and return an empty completion. Leaves the majority for the actual answer.
+	if req.MaxTokens > 0 {
+		if reasoningCap := min(req.MaxTokens/3, 2048); reasoningCap > 0 {
+			body.Reasoning = &ReasoningConfig{MaxTokens: reasoningCap}
+		}
 	}
 
 	// Inject tool names as a lightweight system message (~300 tokens vs full schemas)

@@ -3,6 +3,10 @@ package extraction
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
@@ -70,11 +74,24 @@ func NewRouter(remote output.RemotePDFExtractor, opts ...Option) *Router {
 // Extract routes one PDF to the cheapest engine that can read it and returns
 // its pages with the method used. Page numbers are preserved for citation.
 func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
+	// XML/plain-text documents (GKUOKS tech plans are XML) carry their content
+	// directly — no PDF text layer to mine, no OCR/vision to escalate to.
+	if isTextExt(path) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return Result{}, fmt.Errorf("read text %q: %w", path, err)
+		}
+		pages := []output.PDFPage{{Number: 1, Text: string(raw)}}
+		slog.Info("legalreview extract", "path", path, "method", "text", "pages", 1, "chars", len(raw))
+		return Result{Path: path, Method: "text", Pages: pages}, nil
+	}
+
 	pages, err := r.local.Extract(ctx, path)
 	if err != nil {
 		return Result{}, fmt.Errorf("local extract %q: %w", path, err)
 	}
 	if len(pages) > 0 {
+		slog.Info("legalreview extract", "path", path, "method", "pdftotext", "pages", len(pages), "chars", totalChars(pages))
 		return Result{Path: path, Method: "pdftotext", Pages: pages}, nil
 	}
 
@@ -84,6 +101,7 @@ func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("ocr extract %q: %w", path, err)
 		}
+		slog.Info("legalreview extract", "path", path, "method", EngineMistralOCR, "pages", len(ocr), "chars", totalChars(ocr))
 		return Result{Path: path, Method: EngineMistralOCR, Pages: ocr}, nil
 	}
 
@@ -91,5 +109,26 @@ func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("vision extract %q: %w", path, err)
 	}
+	slog.Info("legalreview extract", "path", path, "method", "vision", "model", r.visionModel, "pages", len(vis), "chars", totalChars(vis))
 	return Result{Path: path, Method: "vision", Pages: vis}, nil
+}
+
+// isTextExt reports whether path is a directly-readable text document (XML tech
+// plans, plain text) that needs no PDF text-layer, OCR, or vision stage.
+func isTextExt(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".xml", ".txt":
+		return true
+	default:
+		return false
+	}
+}
+
+// totalChars sums the text length across pages for extraction logging.
+func totalChars(pages []output.PDFPage) int {
+	n := 0
+	for _, p := range pages {
+		n += len(p.Text)
+	}
+	return n
 }

@@ -3,7 +3,9 @@ package legalreview
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
 )
@@ -45,6 +47,8 @@ func (o *Orchestrator) Review(ctx context.Context, paths []string) (string, erro
 	if len(paths) == 0 {
 		return "", fmt.Errorf("orchestrator: no documents to review")
 	}
+	start := time.Now()
+	slog.Info("legalreview start", "documents", len(paths), "concurrency", o.concurrency)
 
 	digests := make([]Digest, len(paths))
 	sem := make(chan struct{}, o.concurrency)
@@ -60,18 +64,26 @@ func (o *Orchestrator) Review(ctx context.Context, paths []string) (string, erro
 	}
 	wg.Wait()
 
-	anyRead := false
+	read := 0
 	for _, d := range digests {
 		if d.Text != "" {
-			anyRead = true
-			break
+			read++
 		}
 	}
-	if !anyRead {
+	if read == 0 {
 		return "", fmt.Errorf("orchestrator: no documents could be read (%d failed)", len(paths))
 	}
+	slog.Info("legalreview digests ready",
+		"total", len(paths), "read", read, "unread", len(paths)-read,
+		"ms", time.Since(start).Milliseconds())
 
-	return o.reviewer.Review(ctx, digests)
+	report, err := o.reviewer.Review(ctx, digests)
+	if err != nil {
+		return "", err
+	}
+	slog.Info("legalreview done",
+		"report_chars", len(report), "ms", time.Since(start).Milliseconds())
+	return report, nil
 }
 
 // processOne извлекает и выжимает один документ. Любая ошибка → «не прочитан»
@@ -79,10 +91,12 @@ func (o *Orchestrator) Review(ctx context.Context, paths []string) (string, erro
 func (o *Orchestrator) processOne(ctx context.Context, path string) Digest {
 	res, err := o.extractor.Extract(ctx, path)
 	if err != nil {
+		slog.Warn("legalreview unread: extract failed", "path", path, "error", err)
 		return Digest{Path: path}
 	}
 	dig, err := o.digester.Digest(ctx, res)
 	if err != nil {
+		slog.Warn("legalreview unread: digest failed", "path", path, "error", err)
 		return Digest{Path: path}
 	}
 	return dig

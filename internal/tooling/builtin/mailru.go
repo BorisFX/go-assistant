@@ -790,26 +790,120 @@ func (m *MailRuCloud) CollectFolder(ctx context.Context, sub string, exts []stri
 		return nil, fmt.Errorf("collect folder %q: %w", sub, err)
 	}
 	prefix := normalizeSub(sub)
-	cloudPaths := filterIndexByPrefixExt(entries, prefix, exts)
-	if maxFiles > 0 && len(cloudPaths) > maxFiles {
-		return nil, fmt.Errorf("collect folder %q: %d файлов превышает лимит %d — сузьте папку", sub, len(cloudPaths), maxFiles)
+	docPaths := filterIndexByPrefixExt(entries, prefix, exts)
+	archivePaths := filterIndexByPrefixExt(entries, prefix, archiveExts)
+
+	// Bound the fetch set before any network I/O. Archives expand on extraction,
+	// but capping how many cloud items we pull stops an accidental whole-tree
+	// request from downloading thousands of files.
+	if maxFiles > 0 && len(docPaths)+len(archivePaths) > maxFiles {
+		return nil, fmt.Errorf("collect folder %q: %d файлов превышает лимит %d — сузьте папку",
+			sub, len(docPaths)+len(archivePaths), maxFiles)
 	}
-	local := make([]string, 0, len(cloudPaths))
-	for _, cp := range cloudPaths {
-		raw, err := m.downloadFile(ctx, cp)
-		if err != nil {
+
+	local := make([]string, 0, len(docPaths)+len(archivePaths))
+	for _, cp := range docPaths {
+		dest := m.localMirrorPath(cp)
+		if err := m.fetchToFile(ctx, m.webdavPath(cp), dest); err != nil {
 			slog.Warn("collect: download failed", "path", cp, "error", err)
 			continue // a missing file does not fail collection; orchestrator marks it unread
 		}
-		var res struct {
-			LocalPath string `json:"local_path"`
-		}
-		if json.Unmarshal(raw, &res) == nil && res.LocalPath != "" {
-			local = append(local, res.LocalPath)
-		}
+		local = append(local, dest)
 	}
+	for _, ap := range archivePaths {
+		files, err := m.collectArchive(ctx, ap, exts)
+		if err != nil {
+			slog.Warn("collect: archive failed", "path", ap, "error", err)
+			continue // a bad archive is skipped, not fatal to the batch
+		}
+		local = append(local, files...)
+	}
+
 	if len(local) == 0 {
 		return nil, fmt.Errorf("collect folder %q: подходящих документов не найдено", sub)
 	}
 	return local, nil
+}
+
+// localMirrorPath maps a cloud path to its cached location, mirroring the cloud
+// tree under filesDir/cloud so files from different folders never collide.
+func (m *MailRuCloud) localMirrorPath(cloudPath string) string {
+	rel := filepath.FromSlash(strings.TrimPrefix(cloudPath, "/"))
+	return filepath.Join(m.filesDir, "cloud", rel)
+}
+
+// webdavPath turns an index path (relative to basePath) into the absolute
+// WebDAV path used for GET. Mirrors Execute's fullPath: the cached tree index
+// stores paths under basePath, so downloads must prepend it or hit a 404.
+func (m *MailRuCloud) webdavPath(cloudPath string) string {
+	return m.basePath + strings.TrimPrefix(cloudPath, "/")
+}
+
+// fetchToFile downloads cloudPath via WebDAV into destPath. If destPath already
+// exists and is non-empty, the cached copy is reused — the cloud is treated as
+// immutable for a review run, so the bot never re-downloads what it already has.
+// The body is written to a ".part" file and renamed, so an interrupted download
+// never leaves a truncated file that a later run would mistake for a cache hit.
+func (m *MailRuCloud) fetchToFile(ctx context.Context, cloudPath, destPath string) error {
+	if fi, err := os.Stat(destPath); err == nil && fi.Size() > 0 {
+		slog.Info("collect: cache hit", "path", cloudPath)
+		return nil
+	}
+	reqURL := "https://webdav.cloud.mail.ru" + encodeWebDAVPath(cloudPath)
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.SetBasicAuth(m.email, m.password)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("download error: %d", resp.StatusCode)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+	tmp := destPath + ".part"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("write file: %w", err)
+	}
+	out.Close()
+	return os.Rename(tmp, destPath)
+}
+
+// archiveDocExts is the member set harvested from archives: the reviewable
+// document types plus .xml (GKUOKS tech plans are XML, not PDF).
+func archiveDocExts(exts []string) []string {
+	return append(append([]string{}, exts...), ".xml")
+}
+
+// collectArchive downloads one cloud archive (cached) and extracts its reviewable
+// members into a per-archive cache dir under filesDir/extract. If that dir is
+// already populated, both the download and the unpack are skipped.
+func (m *MailRuCloud) collectArchive(ctx context.Context, cloudPath string, exts []string) ([]string, error) {
+	docExts := archiveDocExts(exts)
+	destDir := filepath.Join(m.filesDir, "extract", sanitizeMemberName(strings.TrimPrefix(cloudPath, "/")))
+	if cached := findLocalDocs(destDir, docExts); len(cached) > 0 {
+		slog.Info("collect: archive cache hit", "archive", cloudPath, "files", len(cached))
+		return cached, nil
+	}
+	archivePath := m.localMirrorPath(cloudPath)
+	if err := m.fetchToFile(ctx, m.webdavPath(cloudPath), archivePath); err != nil {
+		return nil, fmt.Errorf("download archive: %w", err)
+	}
+	files, err := extractArchive(ctx, archivePath, destDir, docExts)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("collect: archive extracted", "archive", cloudPath, "files", len(files))
+	return files, nil
 }
