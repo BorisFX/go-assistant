@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type Obsidian struct {
@@ -92,6 +93,23 @@ func (o *Obsidian) resolveInVault(rel string) (string, error) {
 	if full != root && !strings.HasPrefix(full, root+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path %q escapes the vault", rel)
 	}
+	// Lexical check passed; now defend against symlinks inside the vault that
+	// point outside it. Resolve both the target and root, then re-check the
+	// prefix. A not-exist error is fine here — let read surface it normally.
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return full, nil
+		}
+		return "", err
+	}
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes the vault via symlink", rel)
+	}
 	return full, nil
 }
 
@@ -140,6 +158,14 @@ func (o *Obsidian) search(query string) (json.RawMessage, error) {
 			if end > len(text) {
 				end = len(text)
 			}
+			// Snap to rune boundaries so we never cut a multi-byte rune
+			// (the vault is largely Cyrillic).
+			for start > 0 && !utf8.RuneStart(text[start]) {
+				start--
+			}
+			for end < len(text) && !utf8.RuneStart(text[end]) {
+				end++
+			}
 			snippet = strings.ReplaceAll(text[start:end], "\n", " ")
 		}
 		hits = append(hits, searchHit{Path: rel, Snippet: snippet})
@@ -179,7 +205,16 @@ func (o *Obsidian) ingest(ctx context.Context, content string) (json.RawMessage,
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		return nil, fmt.Errorf("ensure inbox: %w", err)
 	}
-	name := slugify(firstLine(content)) + ".md"
+	slug := slugify(firstLine(content))
+	name := slug + ".md"
+	// Avoid silently overwriting an earlier ingest with the same first line:
+	// append -2, -3, ... until the name is free.
+	for i := 2; ; i++ {
+		if _, err := os.Stat(filepath.Join(inbox, name)); os.IsNotExist(err) {
+			break
+		}
+		name = fmt.Sprintf("%s-%d.md", slug, i)
+	}
 	if err := os.WriteFile(filepath.Join(inbox, name), []byte(content), 0o644); err != nil {
 		return nil, fmt.Errorf("write inbox file: %w", err)
 	}

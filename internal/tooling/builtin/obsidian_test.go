@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 )
@@ -95,6 +96,94 @@ func TestObsidianReadPathTraversal(t *testing.T) {
 	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"../../etc/passwd"}`))
 	if err == nil {
 		t.Error("expected path-traversal rejection, got nil error")
+	}
+}
+
+func TestObsidianReadSymlinkEscape(t *testing.T) {
+	vault := writeVault(t)
+	// An outside file the symlink will point to.
+	outsideDir := t.TempDir()
+	secret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("top secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink inside the vault pointing outside it.
+	inbox := filepath.Join(vault, "_agent", "inbox")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(inbox, "link")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks not supported on this platform: %v", err)
+	}
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"read","path":"_agent/inbox/link"}`))
+	if err == nil {
+		t.Error("expected symlink-escape rejection, got nil error")
+	}
+}
+
+func TestObsidianSearchSnippetValidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	// Cyrillic note; search for a Cyrillic substring deep enough that the
+	// byte-offset window starts/ends mid-rune unless snapped to boundaries.
+	body := "# Заметка\nЭто длинная русская заметка про блокчейн и криптовалюты в Камбодже, очень полезная.\n"
+	if err := os.WriteFile(filepath.Join(dir, "ru.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := builtin.NewObsidian(dir, &fakeExecutor{})
+	out, err := o.Execute(context.Background(), json.RawMessage(`{"action":"search","query":"блокчейн"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Hits []struct {
+			Path    string `json:"path"`
+			Snippet string `json:"snippet"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) == 0 {
+		t.Fatalf("expected a hit, got none: %s", out)
+	}
+	for _, h := range res.Hits {
+		if !utf8.ValidString(h.Snippet) {
+			t.Errorf("snippet is not valid UTF-8: %q", h.Snippet)
+		}
+		// JSON marshaling silently replaces invalid bytes with U+FFFD; a
+		// mid-rune cut would surface as the replacement char here.
+		if strings.ContainsRune(h.Snippet, '�') {
+			t.Errorf("snippet contains replacement char (mid-rune cut): %q", h.Snippet)
+		}
+		// The matched query must appear intact in the snippet.
+		if !strings.Contains(h.Snippet, "блокчейн") {
+			t.Errorf("snippet missing intact query: %q", h.Snippet)
+		}
+	}
+}
+
+func TestObsidianIngestUniqueNames(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	for i := 0; i < 2; i++ {
+		if _, err := o.Execute(context.Background(), json.RawMessage(`{"action":"ingest","content":"same content"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(vault, "_agent", "inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 distinct inbox files, got %d", count)
 	}
 }
 
