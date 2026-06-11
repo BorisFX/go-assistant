@@ -105,6 +105,10 @@ func main() {
 	registry := tooling.NewRegistry()
 	registry.Register(builtin.NewSearchWeb(searchClient))
 	registry.Register(builtin.NewRunCode(codeExecutor, cfg.Code.DefaultDir))
+	if cfg.Obsidian.VaultDir != "" {
+		registry.Register(builtin.NewObsidian(cfg.Obsidian.VaultDir, codeExecutor))
+		slog.Info("obsidian tool enabled", "vault_dir", cfg.Obsidian.VaultDir)
+	}
 	registry.Register(builtin.NewBash())
 	registry.Register(builtin.NewReadPDF())
 	registry.Register(builtin.NewInspectSignature())

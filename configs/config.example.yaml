@@ -53,6 +53,11 @@ code:
   binary: "claude"
   default_dir: "~/Programming"
 
+# Obsidian vault integration — set vault_dir to enable the `obsidian` tool.
+# Leave empty to disable (e.g. on instances that should not see the vault).
+obsidian:
+  vault_dir: ""   # absolute path to the synced vault, e.g. /root/Obsidian/Oleg
+
 memory:
   fact_extraction_interval: 6          # extract facts every N messages
   extraction_model: "deepseek/deepseek-v4-flash"
