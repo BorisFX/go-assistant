@@ -62,13 +62,15 @@ New file: `internal/tooling/builtin/obsidian.go` (+ `obsidian_test.go`). One too
 |--------|------|-----------|
 | `search` | native Go | recursive `.md` search under `vault_dir` (filename + content match), returns ranked path + snippet list |
 | `read` | native Go | read a note by relative path, return content (size-capped) |
+| `create` | native Go | create a new note at a vault-relative `path` with `content`; creates parent dirs; **errors if the note already exists** (vault rule: never overwrite — only create or append) |
+| `append` | native Go | append `content` to a note at `path` (creates the note if missing) |
 | `ingest` | delegate | write provided `content` to `_agent/inbox/<slug>.md`, then run `/ingest` via Claude Code in `vault_dir` |
 | `weekly_review` | delegate | run `/weekly-review` via Claude Code in `vault_dir`; return the report path + summary |
 | `cross_pollinate` | delegate | run `/cross-pollinate <note>` via Claude Code in `vault_dir` |
 
 ### Dependencies & construction
 - `NewObsidian(vaultDir string, executor CodeExecutor) *Obsidian` — reuses the existing `CodeExecutor` interface (`ExecuteJSON(ctx, prompt, workDir, onProgress)`), same one `run_code` uses. Delegating actions call `ExecuteJSON(ctx, "/weekly-review", vaultDir, nil)` etc.
-- Native actions (`search`/`read`) do plain filesystem ops rooted at `vaultDir`. Path traversal guard: resolve and confirm the target stays within `vaultDir`.
+- Native actions (`search`/`read`/`create`/`append`) do plain filesystem ops rooted at `vaultDir`. Path traversal guard (`resolveInVault`, incl. symlink-escape rejection): resolve and confirm the target stays within `vaultDir`. Write actions (`create`/`append`) honor the vault's non-destructive rule — `create` refuses to overwrite; frontmatter is the caller's responsibility (the system-prompt instructs the bot to include it).
 
 ### Schema
 Single object schema with `action` (enum, required) and optional `query`, `path`, `content`, `note` fields. Description tells the LLM which fields each action needs.
