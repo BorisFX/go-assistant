@@ -32,12 +32,12 @@ func (o *Obsidian) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["search", "read", "ingest", "weekly_review", "cross_pollinate"],
-				"description": "search: find notes by text; read: read a note by relative path; ingest: save 'content' to the inbox and summarize it into the vault; weekly_review: generate the weekly report; cross_pollinate: find non-obvious links for the note in 'note'"
+				"enum": ["search", "read", "ingest", "weekly_review", "cross_pollinate", "create", "append"],
+				"description": "search: find notes by text; read: read a note by relative path; ingest: save 'content' to the inbox and summarize it into the vault; weekly_review: generate the weekly report; cross_pollinate: find non-obvious links for the note in 'note'; create: write a new note at 'path' with 'content' (errors if it exists); append: append 'content' to the note at 'path' (creates it if missing). create and append require both 'path' and 'content'"
 			},
 			"query": {"type": "string", "description": "search: text to look for in filenames and note content"},
-			"path": {"type": "string", "description": "read: note path relative to the vault root"},
-			"content": {"type": "string", "description": "ingest: raw text (article/transcript) to file into the vault"},
+			"path": {"type": "string", "description": "read/create/append: note path relative to the vault root"},
+			"content": {"type": "string", "description": "ingest: raw text (article/transcript) to file into the vault; create/append: note body to write"},
 			"note": {"type": "string", "description": "cross_pollinate: vault-relative path of the idea note"}
 		},
 		"required": ["action"]
@@ -68,6 +68,10 @@ func (o *Obsidian) Execute(ctx context.Context, params json.RawMessage) (json.Ra
 		return o.delegate(ctx, "/weekly-review")
 	case "cross_pollinate":
 		return o.delegate(ctx, "/cross-pollinate "+p.Note)
+	case "create":
+		return o.write(p.Path, p.Content, false)
+	case "append":
+		return o.write(p.Path, p.Content, true)
 	default:
 		return nil, fmt.Errorf("unknown action %q", p.Action)
 	}
@@ -81,6 +85,13 @@ const maxReadBytes = 100_000
 
 // resolveInVault joins rel onto vaultDir and rejects escapes.
 func (o *Obsidian) resolveInVault(rel string) (string, error) {
+	// Reject traversal in the raw path before Clean("/"+rel) absorbs leading
+	// ".." segments and silently maps them back inside the vault.
+	if rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") ||
+		strings.Contains(rel, "/../") || strings.Contains(rel, "\\..\\") ||
+		strings.HasSuffix(rel, "/..") || strings.HasSuffix(rel, "\\..") {
+		return "", fmt.Errorf("path %q escapes the vault", rel)
+	}
 	abs := filepath.Join(o.vaultDir, filepath.Clean("/"+rel))
 	root, err := filepath.Abs(o.vaultDir)
 	if err != nil {
@@ -219,6 +230,37 @@ func (o *Obsidian) ingest(ctx context.Context, content string) (json.RawMessage,
 		return nil, fmt.Errorf("write inbox file: %w", err)
 	}
 	return o.delegate(ctx, "/ingest")
+}
+
+func (o *Obsidian) write(rel, content string, appendMode bool) (json.RawMessage, error) {
+	if strings.TrimSpace(rel) == "" {
+		return nil, fmt.Errorf("write requires a path")
+	}
+	full, err := o.resolveInVault(rel)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return nil, fmt.Errorf("ensure dir: %w", err)
+	}
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_EXCL // fail if the note already exists (no overwrite)
+	}
+	f, err := os.OpenFile(full, flags, 0o644)
+	if err != nil {
+		if !appendMode && os.IsExist(err) {
+			return nil, fmt.Errorf("note %q already exists; use append to add to it", rel)
+		}
+		return nil, fmt.Errorf("open note: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		return nil, fmt.Errorf("write note: %w", err)
+	}
+	return json.Marshal(map[string]any{"path": rel, "appended": appendMode})
 }
 
 func firstLine(s string) string {

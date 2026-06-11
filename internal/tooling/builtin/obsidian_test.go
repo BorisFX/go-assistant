@@ -242,3 +242,49 @@ func TestObsidianCrossPollinateDelegates(t *testing.T) {
 		t.Errorf("cross_pollinate prompt = %q", fx.gotPrompt)
 	}
 }
+
+func TestObsidianCreate(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	out, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"400/new.md","content":"# New\nbody\n"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "400/new.md") {
+		t.Errorf("create did not report path: %s", out)
+	}
+	b, readErr := os.ReadFile(filepath.Join(vault, "400", "new.md"))
+	if readErr != nil || string(b) != "# New\nbody\n" {
+		t.Errorf("note not written correctly: %q err=%v", string(b), readErr)
+	}
+}
+
+func TestObsidianCreateNoOverwrite(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"200/go.md","content":"x"}`))
+	if err == nil {
+		t.Error("create overwrote an existing note; expected error")
+	}
+}
+
+func TestObsidianAppend(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	if _, err := o.Execute(context.Background(), json.RawMessage(`{"action":"append","path":"200/go.md","content":"\nmore"}`)); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(vault, "200", "go.md"))
+	if !strings.Contains(string(b), "built in golang") || !strings.Contains(string(b), "more") {
+		t.Errorf("append did not preserve+add content: %q", string(b))
+	}
+}
+
+func TestObsidianCreateTraversal(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"../evil.md","content":"x"}`))
+	if err == nil {
+		t.Error("expected traversal rejection on create")
+	}
+}

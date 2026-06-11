@@ -821,6 +821,132 @@ git commit -m "feat(obsidian): register tool only when obsidian.vault_dir is set
 
 ---
 
+### Task 9b: Add `create` and `append` write actions
+
+**Files:**
+- Modify: `internal/tooling/builtin/obsidian.go`
+- Test: `internal/tooling/builtin/obsidian_test.go`
+
+Goal: let the bot write notes directly. `create` makes a new note (errors if it exists — vault rule "never overwrite, only create or append"); `append` adds to a note (creates if missing). Both reuse `resolveInVault` (so traversal/symlink escape is already rejected) and ensure parent dirs.
+
+- [ ] **Step 1: Write failing tests** (append to `obsidian_test.go`)
+
+```go
+func TestObsidianCreate(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	out, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"400/new.md","content":"# New\nbody\n"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "400/new.md") {
+		t.Errorf("create did not report path: %s", out)
+	}
+	b, readErr := os.ReadFile(filepath.Join(vault, "400", "new.md"))
+	if readErr != nil || string(b) != "# New\nbody\n" {
+		t.Errorf("note not written correctly: %q err=%v", string(b), readErr)
+	}
+}
+
+func TestObsidianCreateNoOverwrite(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"200/go.md","content":"x"}`))
+	if err == nil {
+		t.Error("create overwrote an existing note; expected error")
+	}
+}
+
+func TestObsidianAppend(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	if _, err := o.Execute(context.Background(), json.RawMessage(`{"action":"append","path":"200/go.md","content":"\nmore"}`)); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(vault, "200", "go.md"))
+	if !strings.Contains(string(b), "built in golang") || !strings.Contains(string(b), "more") {
+		t.Errorf("append did not preserve+add content: %q", string(b))
+	}
+}
+
+func TestObsidianCreateTraversal(t *testing.T) {
+	vault := writeVault(t)
+	o := builtin.NewObsidian(vault, &fakeExecutor{})
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"create","path":"../evil.md","content":"x"}`))
+	if err == nil {
+		t.Error("expected traversal rejection on create")
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `go test ./internal/tooling/builtin/ -run TestObsidian -v`
+Expected: FAIL — `create`/`append` unknown actions.
+
+- [ ] **Step 3: Implement**
+
+In `obsidian.go` schema, extend the `action` enum to include `create` and `append`, and update the description to note `path`+`content` are required for them. Add dispatch cases in `Execute`:
+
+```go
+	case "create":
+		return o.write(p.Path, p.Content, false)
+	case "append":
+		return o.write(p.Path, p.Content, true)
+```
+
+Add the `write` method:
+
+```go
+func (o *Obsidian) write(rel, content string, appendMode bool) (json.RawMessage, error) {
+	if strings.TrimSpace(rel) == "" {
+		return nil, fmt.Errorf("write requires a path")
+	}
+	full, err := o.resolveInVault(rel)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return nil, fmt.Errorf("ensure dir: %w", err)
+	}
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_EXCL // fail if the note already exists (no overwrite)
+	}
+	f, err := os.OpenFile(full, flags, 0o644)
+	if err != nil {
+		if !appendMode && os.IsExist(err) {
+			return nil, fmt.Errorf("note %q already exists; use append to add to it", rel)
+		}
+		return nil, fmt.Errorf("open note: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		return nil, fmt.Errorf("write note: %w", err)
+	}
+	return json.Marshal(map[string]any{"path": rel, "appended": appendMode})
+}
+```
+
+Note: `resolveInVault` rejects an escaping `rel`; for a brand-new in-vault path that doesn't exist yet, EvalSymlinks not-exist falls back to the lexical path, which is correct for `create`. `O_EXCL` enforces the no-overwrite rule atomically.
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `go test ./internal/tooling/builtin/ -run TestObsidian -v`
+Expected: PASS for create, create-no-overwrite, append, create-traversal (plus all prior tests).
+
+- [ ] **Step 5: Build, vet, commit**
+
+```bash
+go build ./... && go vet ./internal/tooling/builtin/
+git add internal/tooling/builtin/obsidian.go internal/tooling/builtin/obsidian_test.go docs/superpowers
+git commit -m "feat(obsidian): add create and append write actions (no overwrite)"
+```
+
+---
+
 ## Phase 3 — Linode deploy + wiring (prod, step-by-step with confirmation)
 
 > These steps touch the production bot host and a live `system-prompt.md`. Do them one at a time and confirm with the user before each server-changing step. The Go change is behind the config gate, so until step 3 sets `vault_dir`, nothing changes for the running bot.
