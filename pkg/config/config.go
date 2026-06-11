@@ -21,6 +21,7 @@ type Config struct {
 	Memory       MemoryConfig `yaml:"memory"`
 	SystemPrompt string       `yaml:"system_prompt_file"`
 	MailRu       MailRu       `yaml:"mailru"`
+	Obsidian     Obsidian     `yaml:"obsidian"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
 	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
 	Timezone string `yaml:"timezone"`
@@ -92,6 +93,10 @@ type Dashboard struct {
 type Code struct {
 	Binary     string `yaml:"binary"`
 	DefaultDir string `yaml:"default_dir"`
+}
+
+type Obsidian struct {
+	VaultDir string `yaml:"vault_dir"`
 }
 
 type MemoryConfig struct {
