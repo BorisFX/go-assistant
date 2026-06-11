@@ -97,3 +97,59 @@ func TestObsidianReadPathTraversal(t *testing.T) {
 		t.Error("expected path-traversal rejection, got nil error")
 	}
 }
+
+func TestObsidianIngestWritesInboxAndDelegates(t *testing.T) {
+	vault := writeVault(t)
+	if err := os.MkdirAll(filepath.Join(vault, "_agent", "inbox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx := &fakeExecutor{}
+	o := builtin.NewObsidian(vault, fx)
+
+	_, err := o.Execute(context.Background(), json.RawMessage(`{"action":"ingest","content":"hello vault"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// content landed in inbox
+	entries, _ := os.ReadDir(filepath.Join(vault, "_agent", "inbox"))
+	found := false
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("ingest did not write a file to _agent/inbox")
+	}
+	// delegated to /ingest in the vault dir
+	if fx.gotPrompt != "/ingest" {
+		t.Errorf("delegate prompt = %q, want /ingest", fx.gotPrompt)
+	}
+	if fx.gotWorkDir != vault {
+		t.Errorf("delegate workDir = %q, want %q", fx.gotWorkDir, vault)
+	}
+}
+
+func TestObsidianWeeklyReviewDelegates(t *testing.T) {
+	vault := writeVault(t)
+	fx := &fakeExecutor{}
+	o := builtin.NewObsidian(vault, fx)
+	if _, err := o.Execute(context.Background(), json.RawMessage(`{"action":"weekly_review"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fx.gotPrompt != "/weekly-review" || fx.gotWorkDir != vault {
+		t.Errorf("weekly_review delegated wrong: prompt=%q workDir=%q", fx.gotPrompt, fx.gotWorkDir)
+	}
+}
+
+func TestObsidianCrossPollinateDelegates(t *testing.T) {
+	vault := writeVault(t)
+	fx := &fakeExecutor{}
+	o := builtin.NewObsidian(vault, fx)
+	if _, err := o.Execute(context.Background(), json.RawMessage(`{"action":"cross_pollinate","note":"200/go.md"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if fx.gotPrompt != "/cross-pollinate 200/go.md" {
+		t.Errorf("cross_pollinate prompt = %q", fx.gotPrompt)
+	}
+}

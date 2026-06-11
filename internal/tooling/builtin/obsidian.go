@@ -172,5 +172,44 @@ func (o *Obsidian) read(rel string) (json.RawMessage, error) {
 }
 
 func (o *Obsidian) ingest(ctx context.Context, content string) (json.RawMessage, error) {
-	return nil, fmt.Errorf("not implemented")
+	if strings.TrimSpace(content) == "" {
+		return nil, fmt.Errorf("ingest requires content")
+	}
+	inbox := filepath.Join(o.vaultDir, "_agent", "inbox")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		return nil, fmt.Errorf("ensure inbox: %w", err)
+	}
+	name := slugify(firstLine(content)) + ".md"
+	if err := os.WriteFile(filepath.Join(inbox, name), []byte(content), 0o644); err != nil {
+		return nil, fmt.Errorf("write inbox file: %w", err)
+	}
+	return o.delegate(ctx, "/ingest")
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(strings.TrimLeft(s, "# "))
+}
+
+func slugify(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '_':
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		out = "inbox-item"
+	}
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	return out
 }
