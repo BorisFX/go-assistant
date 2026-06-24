@@ -328,6 +328,88 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+// forwardSource returns a human description of a forwarded message's origin and
+// whether the message is forwarded at all.
+func forwardSource(m *tgbotapi.Message) (string, bool) {
+	switch {
+	case m.ForwardFrom != nil:
+		name := strings.TrimSpace(m.ForwardFrom.FirstName + " " + m.ForwardFrom.LastName)
+		if m.ForwardFrom.UserName != "" {
+			name = strings.TrimSpace(name + " (@" + m.ForwardFrom.UserName + ")")
+		}
+		if name == "" {
+			name = "пользователя"
+		}
+		return name, true
+	case m.ForwardFromChat != nil:
+		title := m.ForwardFromChat.Title
+		if title == "" {
+			title = m.ForwardFromChat.UserName
+		}
+		return "канала «" + title + "»", true
+	case m.ForwardSenderName != "":
+		return m.ForwardSenderName, true
+	case m.ForwardDate != 0:
+		return "неизвестного отправителя", true
+	}
+	return "", false
+}
+
+// quotedAuthor describes who wrote the message being replied to.
+func quotedAuthor(m *tgbotapi.Message) string {
+	if m.From == nil {
+		return ""
+	}
+	if m.From.IsBot {
+		return " (твоё прошлое сообщение)"
+	}
+	if m.From.UserName != "" {
+		return " (от @" + m.From.UserName + ")"
+	}
+	return " (от " + m.From.FirstName + ")"
+}
+
+func mediaKind(m *tgbotapi.Message) string {
+	switch {
+	case m.Voice != nil:
+		return "голосовое"
+	case len(m.Photo) > 0:
+		return "фото"
+	case m.Document != nil:
+		return "документ"
+	case m.Sticker != nil:
+		return "стикер"
+	default:
+		return "сообщение без текста"
+	}
+}
+
+// enrichContent annotates the user's text so the LLM can clearly tell apart what
+// the user wrote, what message they are replying to (pointing at), and content
+// they forwarded from someone else.
+func (b *Bot) enrichContent(msg *tgbotapi.Message) string {
+	var parts []string
+
+	if r := msg.ReplyToMessage; r != nil {
+		quoted := r.Text
+		if quoted == "" {
+			quoted = r.Caption
+		}
+		if quoted == "" {
+			quoted = "[" + mediaKind(r) + "]"
+		}
+		parts = append(parts, fmt.Sprintf("[Пользователь отвечает на это сообщение%s]:\n%s\n", quotedAuthor(r), truncate(quoted, 4000)))
+	}
+
+	if src, ok := forwardSource(msg); ok {
+		parts = append(parts, fmt.Sprintf("[ПЕРЕСЛАННОЕ сообщение от %s — это НЕ слова пользователя, а пересланный текст]:\n%s", src, msg.Text))
+	} else {
+		parts = append(parts, msg.Text)
+	}
+
+	return strings.Join(parts, "\n")
+}
+
 func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 	if b.legalReview != nil {
 		if folder, ok := legalreview.ParseReviewFolder(msg.Text); ok {
@@ -348,7 +430,7 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 
 	resp, err := b.chatService.ProcessMessage(ctx, input.ChatRequest{
 		SessionKey: sessionKey,
-		Content:    msg.Text,
+		Content:    b.enrichContent(msg),
 		OnProgress: func(status string) {
 			stream.UpdateDraft(status)
 		},
