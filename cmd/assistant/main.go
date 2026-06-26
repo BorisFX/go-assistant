@@ -115,6 +115,12 @@ func main() {
 	registry.Register(builtin.NewBash())
 	registry.Register(builtin.NewReadPDF())
 	registry.Register(builtin.NewInspectSignature())
+	if cfg.TravelSearch.RapidAPIKey != "" {
+		rapidClient := builtin.NewRapidAPIClient(cfg.TravelSearch.RapidAPIKey, cfg.TravelSearch.RapidAPIHost)
+		registry.Register(builtin.NewFlightSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
+		registry.Register(builtin.NewHotelSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
+		slog.Info("travel search tools enabled", "host", cfg.TravelSearch.RapidAPIHost)
+	}
 	if tradingClient != nil {
 		registry.Register(builtin.NewTradingStatus(tradingClient))
 	}

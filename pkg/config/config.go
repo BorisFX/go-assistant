@@ -9,13 +9,13 @@ import (
 )
 
 type Config struct {
-	Mode      string    `yaml:"mode"` // "server" or "local"
-	Telegram  Telegram  `yaml:"telegram"`
-	LLM       LLM       `yaml:"llm"`
-	Database  Database  `yaml:"database"`
-	Search    Search    `yaml:"search"`
-	Trading   Trading   `yaml:"trading"`
-	Budget    Budget    `yaml:"budget"`
+	Mode         string       `yaml:"mode"` // "server" or "local"
+	Telegram     Telegram     `yaml:"telegram"`
+	LLM          LLM          `yaml:"llm"`
+	Database     Database     `yaml:"database"`
+	Search       Search       `yaml:"search"`
+	Trading      Trading      `yaml:"trading"`
+	Budget       Budget       `yaml:"budget"`
 	Dashboard    Dashboard    `yaml:"dashboard"`
 	Code         Code         `yaml:"code"`
 	Memory       MemoryConfig `yaml:"memory"`
@@ -23,6 +23,7 @@ type Config struct {
 	MailRu       MailRu       `yaml:"mailru"`
 	LegalReview  LegalReview  `yaml:"legal_review"`
 	Obsidian     Obsidian     `yaml:"obsidian"`
+	TravelSearch TravelSearch `yaml:"travel_search"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
 	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
 	Timezone string `yaml:"timezone"`
@@ -112,6 +113,16 @@ type Code struct {
 
 type Obsidian struct {
 	VaultDir string `yaml:"vault_dir"`
+}
+
+// TravelSearch configures the flight_search and hotel_search tools. Off by
+// default (empty RapidAPIKey), so existing configs need no migration. Both
+// tools share one RapidAPI key (booking-com15).
+type TravelSearch struct {
+	RapidAPIKey  string `yaml:"rapidapi_key"`
+	RapidAPIHost string `yaml:"rapidapi_host"`
+	Currency     string `yaml:"currency"`
+	ResultsLimit int    `yaml:"results_limit"`
 }
 
 type MemoryConfig struct {
@@ -230,6 +241,19 @@ func (c *Config) setDefaults() {
 	if c.Memory.DedupThreshold == 0 {
 		c.Memory.DedupThreshold = 0.15
 	}
+	// TravelSearch defaults apply only when the feature is enabled (key set).
+	if c.TravelSearch.RapidAPIKey != "" {
+		if c.TravelSearch.RapidAPIHost == "" {
+			c.TravelSearch.RapidAPIHost = "booking-com15.p.rapidapi.com"
+		}
+		if c.TravelSearch.Currency == "" {
+			c.TravelSearch.Currency = "USD"
+		}
+		if c.TravelSearch.ResultsLimit == 0 {
+			c.TravelSearch.ResultsLimit = 6
+		}
+	}
+
 	// LegalReview numeric defaults apply only when the feature is enabled.
 	if c.LegalReview.Enabled {
 		if c.LegalReview.MaxFiles == 0 {
