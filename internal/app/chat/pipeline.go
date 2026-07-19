@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
@@ -13,37 +14,62 @@ import (
 type Pipeline struct {
 	classifier  *RuleClassifier
 	llm         output.LLMProvider
+	visionLLM   output.LLMProvider
 	registry    output.ToolRegistry
 	executor    *ToolLoop
 	visionModel string
+	chatConfig  ChatConfig
+}
+
+type ChatConfig struct {
+	MaxTokens          int
+	MaxToolResultChars int
+	ChatTemperature    float64
+	ToolTemperature    float64
 }
 
 func NewPipeline(
 	classifier *RuleClassifier,
 	llm output.LLMProvider,
+	visionLLM output.LLMProvider,
 	registry output.ToolRegistry,
 	executor *ToolLoop,
 	visionModel string,
+	chatConfig ChatConfig,
 ) *Pipeline {
 	if visionModel == "" {
 		visionModel = "google/gemini-2.5-flash"
 	}
+	// Vision runs on its own provider (OpenRouter) even when chat is on another
+	// gateway. Fall back to the chat client if no dedicated vision client is given.
+	if visionLLM == nil {
+		visionLLM = llm
+	}
 	return &Pipeline{
 		classifier:  classifier,
 		llm:         llm,
+		visionLLM:   visionLLM,
 		registry:    registry,
 		executor:    executor,
 		visionModel: visionModel,
+		chatConfig:  chatConfig,
 	}
 }
 
 type ToolLoop struct {
-	registry output.ToolRegistry
-	maxTurns int
+	registry           output.ToolRegistry
+	maxTurns           int
+	maxToolResultChars int
+	maxTokens          int
 }
 
-func NewToolLoop(registry output.ToolRegistry, maxTurns int) *ToolLoop {
-	return &ToolLoop{registry: registry, maxTurns: maxTurns}
+func NewToolLoop(registry output.ToolRegistry, maxTurns, maxToolResultChars int) *ToolLoop {
+	return &ToolLoop{
+		registry:           registry,
+		maxTurns:           maxTurns,
+		maxToolResultChars: maxToolResultChars,
+		maxTokens:          4096,
+	}
 }
 
 func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, onUpdate func(string)) (*output.LLMResponse, error) {
@@ -68,19 +94,23 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	// Tool-driven work (document analysis, signatures, trading, code) is a
 	// factual task: keep temperature low so the model reports what it read
 	// instead of confabulating. Plain chat stays conversational.
-	temperature := 0.7
+	temperature := p.chatConfig.ChatTemperature
 	if len(toolNames) > 0 {
-		temperature = 0.2
+		temperature = p.chatConfig.ToolTemperature
 	}
 
 	req := output.LLMRequest{
 		Messages:    messages,
-		MaxTokens:   4096,
+		MaxTokens:   p.chatConfig.MaxTokens,
 		Temperature: temperature,
 	}
 
+	// Image requests go to the vision model on its own provider (visionLLM);
+	// everything else uses the primary chat client.
+	activeLLM := p.llm
 	if hasImages {
 		req.Model = p.visionModel // vision-capable model (configurable)
+		activeLLM = p.visionLLM
 	}
 
 	if len(toolNames) > 0 {
@@ -107,13 +137,14 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 		}
 	}
 
-	resp, err := p.llm.Chat(ctx, req)
+	resp, err := activeLLM.Chat(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("llm chat: %w", err)
 	}
 
 	if len(resp.ToolCalls) > 0 && p.executor != nil {
-		resp, err = p.executor.Run(ctx, p.llm, messages, resp, req.Tools, temperature, onUpdate)
+		p.executor.maxTokens = p.chatConfig.MaxTokens
+		resp, err = p.executor.Run(ctx, activeLLM, messages, resp, req.Tools, temperature, onUpdate)
 		if err != nil {
 			return nil, err
 		}
@@ -147,46 +178,66 @@ func (tl *ToolLoop) Run(
 			ToolCalls: resp.ToolCalls,
 		})
 
-		for _, tc := range resp.ToolCalls {
-			tool, err := tl.registry.GetTool(tc.Name)
-			if err != nil {
-				messages = append(messages, output.LLMMessage{
+		// Execute all tool calls in parallel — independent calls (e.g. multiple
+		// search_web or read_pdf) run concurrently instead of sequentially.
+		type toolResult struct {
+			idx     int
+			message output.LLMMessage
+		}
+		results := make([]toolResult, len(resp.ToolCalls))
+		var wg sync.WaitGroup
+		for i, tc := range resp.ToolCalls {
+			wg.Add(1)
+			go func(i int, tc entity.ToolCall) {
+				defer wg.Done()
+				tool, err := tl.registry.GetTool(tc.Name)
+				if err != nil {
+					results[i] = toolResult{i, output.LLMMessage{
+						Role:       entity.RoleTool,
+						Content:    fmt.Sprintf("Error: tool %q not found", tc.Name),
+						ToolCallID: tc.ID,
+					}}
+					return
+				}
+
+				if onUpdate != nil {
+					onUpdate(fmt.Sprintf("Running tool: %s", tc.Name))
+				}
+
+				slog.Info("tool loop: executing tool", "turn", turn, "tool", tc.Name)
+				result, err := tool.Execute(ctx, json.RawMessage(tc.Args))
+				if err != nil {
+					slog.Warn("tool loop: tool error", "tool", tc.Name, "error", err)
+					results[i] = toolResult{i, output.LLMMessage{
+						Role:       entity.RoleTool,
+						Content:    fmt.Sprintf("Error: %v", err),
+						ToolCallID: tc.ID,
+					}}
+					return
+				}
+
+				// Truncate tool results to prevent LLM overload. Smart truncation:
+				// keep beginning (context) + end (conclusion) so key info survives.
+				resultStr := string(result)
+				if len(resultStr) > tl.maxToolResultChars {
+					head := tl.maxToolResultChars * 2 / 3
+					tail := tl.maxToolResultChars - head - 100
+					truncated := len(resultStr) - tl.maxToolResultChars
+					resultStr = resultStr[:head] +
+						fmt.Sprintf("\n\n... [truncated %d chars] ...\n\n", truncated) +
+						resultStr[len(resultStr)-tail:]
+				}
+
+				results[i] = toolResult{i, output.LLMMessage{
 					Role:       entity.RoleTool,
-					Content:    fmt.Sprintf("Error: tool %q not found", tc.Name),
+					Content:    resultStr,
 					ToolCallID: tc.ID,
-				})
-				continue
-			}
-
-			if onUpdate != nil {
-				onUpdate(fmt.Sprintf("Running tool: %s", tc.Name))
-			}
-
-			slog.Info("tool loop: executing tool", "turn", turn, "tool", tc.Name)
-			result, err := tool.Execute(ctx, json.RawMessage(tc.Args))
-			if err != nil {
-				slog.Warn("tool loop: tool error", "tool", tc.Name, "error", err)
-				messages = append(messages, output.LLMMessage{
-					Role:       entity.RoleTool,
-					Content:    fmt.Sprintf("Error: %v", err),
-					ToolCallID: tc.ID,
-				})
-				continue
-			}
-
-			// Truncate tool results to prevent LLM overload. Document tools
-			// (read_pdf) can return up to 40k chars; keep enough that a single
-			// page of a document survives instead of being cut to a stub.
-			resultStr := string(result)
-			if len(resultStr) > 24000 {
-				resultStr = resultStr[:24000] + "\n\n... (truncated, full content too large)"
-			}
-
-			messages = append(messages, output.LLMMessage{
-				Role:       entity.RoleTool,
-				Content:    resultStr,
-				ToolCallID: tc.ID,
-			})
+				}}
+			}(i, tc)
+		}
+		wg.Wait()
+		for _, r := range results {
+			messages = append(messages, r.message)
 		}
 
 		// Make the model aware the tool budget is finite so it converges on an
@@ -213,7 +264,7 @@ func (tl *ToolLoop) Run(
 		req := output.LLMRequest{
 			Messages:    messages,
 			Tools:       turnTools,
-			MaxTokens:   4096,
+			MaxTokens:   tl.maxTokens,
 			Temperature: temperature,
 		}
 
@@ -254,7 +305,7 @@ func (tl *ToolLoop) Run(
 		})
 		if final, err := llm.Chat(ctx, output.LLMRequest{
 			Messages:    messages,
-			MaxTokens:   4096,
+			MaxTokens:   tl.maxTokens,
 			Temperature: temperature,
 		}); err == nil && final.Content != "" {
 			resp = final

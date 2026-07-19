@@ -16,9 +16,13 @@ func NewSearchWeb(provider output.SearchProvider) *SearchWeb {
 	return &SearchWeb{provider: provider}
 }
 
-func (s *SearchWeb) Name() string        { return "search_web" }
-func (s *SearchWeb) Description() string { return "Search the internet for information" }
-func (s *SearchWeb) Category() string    { return "search" }
+func (s *SearchWeb) Name() string { return "search_web" }
+func (s *SearchWeb) Description() string {
+	return "Search the internet for information. Pass a short keyword query (2-6 words), " +
+		"not a full sentence — search engines match keywords, so a conversational phrase " +
+		"returns irrelevant results. Keep the query in the same language as the topic."
+}
+func (s *SearchWeb) Category() string { return "search" }
 
 func (s *SearchWeb) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -26,7 +30,7 @@ func (s *SearchWeb) Schema() json.RawMessage {
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "The search query"
+				"description": "Concise keyword search query (2-6 words), not a full sentence. Good: \"bitcoin price today\", \"новости Камбоджа виза\". Bad: \"what is the current price of bitcoin right now\"."
 			},
 			"max_results": {
 				"type": "integer",

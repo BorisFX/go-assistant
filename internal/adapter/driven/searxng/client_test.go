@@ -47,3 +47,39 @@ func TestClient_Search(t *testing.T) {
 		t.Errorf("expected title 'Job 1', got %s", results[0].Title)
 	}
 }
+
+// SearXNG's keyword engines return off-topic, wrong-language noise when no
+// language hint is sent. The client must derive one from the query script so
+// Russian searches don't come back with unrelated English/Chinese pages.
+func TestClient_Search_LanguageParam(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"cyrillic query -> ru", "цена биткоина сегодня", "ru"},
+		{"latin query -> en", "bitcoin price today", "en"},
+		{"mixed with cyrillic -> ru", "Solana wallet трекер", "ru"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotLang string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotLang = r.URL.Query().Get("language")
+				json.NewEncoder(w).Encode(searxng.APIResponse{
+					Results: []searxng.APIResult{{Title: "r", URL: "u", Content: "c"}},
+				})
+			}))
+			defer server.Close()
+
+			client := searxng.New(server.URL)
+			if _, err := client.Search(context.Background(), tc.query, 5); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotLang != tc.want {
+				t.Errorf("query %q: expected language=%q, got %q", tc.query, tc.want, gotLang)
+			}
+		})
+	}
+}

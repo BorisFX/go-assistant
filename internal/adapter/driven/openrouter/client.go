@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -13,20 +14,56 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
+	"github.com/olegmatyakubov/go-assistant/internal/observability"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
-const baseURL = "https://openrouter.ai/api/v1/chat/completions"
+const defaultBaseURL = "https://openrouter.ai/api/v1/chat/completions"
+
+// providerFromURL extracts a short provider label from the endpoint URL
+// so metrics can distinguish between OpenRouter, a6api, etc.
+func providerFromURL(u string) string {
+	switch {
+	case strings.Contains(u, "openrouter.ai"):
+		return "openrouter"
+	case strings.Contains(u, "a6api"):
+		return "a6api"
+	case strings.Contains(u, "openai.com"):
+		return "openai"
+	default:
+		return "custom"
+	}
+}
+
+func mustLLMMetrics() *observability.LLMMetrics {
+	m, err := observability.NewLLMMetrics()
+	if err != nil {
+		return nil
+	}
+	return m
+}
 
 type Client struct {
 	apiKey     string
 	model      string
 	fallback   string
+	baseURL    string
+	provider   string
 	httpClient *http.Client
+	limiter    *rate.Limiter
+	metrics    *observability.LLMMetrics
 }
 
-func New(apiKey, model, fallback string) *Client {
+// New builds a chat client. baseURL overrides the OpenAI-compatible
+// chat-completions endpoint; pass "" to use OpenRouter's default.
+func New(apiKey, model, fallback, baseURL string) *Client {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	provider := providerFromURL(baseURL)
 	// Force HTTP/1.1 to avoid GOAWAY issues with OpenRouter
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{},
@@ -35,16 +72,23 @@ func New(apiKey, model, fallback string) *Client {
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:        10,
+		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
 		DisableKeepAlives:   false,
-		MaxIdleConnsPerHost: 5,
+		MaxIdleConnsPerHost: 20,
+		MaxConnsPerHost:     50,
 	}
 
 	return &Client{
 		apiKey:   apiKey,
 		model:    model,
 		fallback: fallback,
+		baseURL:  baseURL,
+		provider: provider,
+		// 20 requests/sec burst of 5 — matches OpenRouter's rate limits.
+		// Prevents runaway tool loops from hitting 429s.
+		limiter:  rate.NewLimiter(rate.Limit(20), 5),
+		metrics:  mustLLMMetrics(),
 		httpClient: &http.Client{
 			Transport: transport,
 			// Reasoning models (e.g. the legal-review coordinator on Sonnet with an
@@ -306,10 +350,14 @@ func cacheMessage(m *APIMessage) {
 }
 
 func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
+
 	const maxRetries = 3
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(jsonBody))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(jsonBody))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
@@ -361,8 +409,12 @@ func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMRe
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	start := time.Now()
 	respBody, err := c.doRequest(ctx, jsonBody)
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordRequest(ctx, c.provider, model, time.Since(start), 0, 0, 0, err)
+		}
 		return nil, err
 	}
 
@@ -405,9 +457,166 @@ func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMRe
 			"completion_tokens", apiResp.Usage.CompletionTokens)
 	}
 
+	if c.metrics != nil {
+		c.metrics.RecordRequest(ctx, c.provider, apiResp.Model, time.Since(start),
+			apiResp.Usage.PromptTokens,
+			apiResp.Usage.CompletionTokens,
+			apiResp.Usage.PromptTokensDetails.CachedTokens,
+			nil)
+	}
+
 	return result, nil
 }
 
 func (c *Client) ChatStream(ctx context.Context, req output.LLMRequest, onChunk func(chunk string)) (*output.LLMResponse, error) {
-	return c.Chat(ctx, req)
+	if onChunk == nil {
+		return c.Chat(ctx, req)
+	}
+
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	body := BuildRequestBody(model, req)
+	body.Stream = true
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	start := time.Now()
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do stream request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openrouter stream error %d: %s", resp.StatusCode, string(body))
+	}
+
+	result, err := c.parseSSE(resp.Body, onChunk)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.metrics != nil {
+		c.metrics.RecordRequest(ctx, c.provider, model, time.Since(start),
+			result.InputTokens, result.OutputTokens, 0, nil)
+	}
+	return result, nil
+}
+
+// streamDelta is a partial SSE chunk from an OpenAI-compatible streaming response.
+type streamDelta struct {
+	Choices []struct {
+		Delta struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+	Model string `json:"model"`
+}
+
+func (c *Client) parseSSE(body io.Reader, onChunk func(string)) (*output.LLMResponse, error) {
+	var (
+		contentBuf strings.Builder
+		// toolCallArgs accumulates streamed argument fragments per tool call index
+		toolCallArgs = map[int]entity.ToolCall{}
+		inputTokens  int
+		outputTokens int
+		respModel    string
+	)
+
+	scanner := bufio.NewScanner(body)
+	// Increase buffer for large SSE lines (tool call args can be long)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+
+		var delta streamDelta
+		if err := json.Unmarshal([]byte(payload), &delta); err != nil {
+			continue
+		}
+
+		if delta.Usage != nil {
+			inputTokens = delta.Usage.PromptTokens
+			outputTokens = delta.Usage.CompletionTokens
+		}
+		if delta.Model != "" {
+			respModel = delta.Model
+		}
+
+		if len(delta.Choices) == 0 {
+			continue
+		}
+		d := delta.Choices[0].Delta
+
+		if d.Content != "" {
+			contentBuf.WriteString(d.Content)
+			onChunk(d.Content)
+		}
+
+		for _, tc := range d.ToolCalls {
+			existing := toolCallArgs[tc.Index]
+			if tc.ID != "" {
+				existing.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				existing.Name = tc.Function.Name
+			}
+			existing.Args += tc.Function.Arguments
+			toolCallArgs[tc.Index] = existing
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read SSE stream: %w", err)
+	}
+
+	result := &output.LLMResponse{
+		Content:      contentBuf.String(),
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		Model:        respModel,
+	}
+	for i := 0; i < len(toolCallArgs); i++ {
+		if tc, ok := toolCallArgs[i]; ok {
+			result.ToolCalls = append(result.ToolCalls, tc)
+		}
+	}
+	return result, nil
 }

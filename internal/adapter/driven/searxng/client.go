@@ -63,6 +63,10 @@ func (c *Client) searchSearXNG(ctx context.Context, query string, maxResults int
 	q.Set("q", query)
 	q.Set("format", "json")
 	q.Set("pageno", "1")
+	// Without a language hint SearXNG's keyword engines return off-topic,
+	// wrong-language noise (e.g. a Russian query yields unrelated English/Chinese
+	// pages). Derive the language from the query script so results stay on topic.
+	q.Set("language", detectLanguage(query))
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -116,11 +120,7 @@ func (c *Client) searchDuckDuckGo(ctx context.Context, query string, maxResults 
 		Abstract       string `json:"Abstract"`
 		AbstractURL    string `json:"AbstractURL"`
 		AbstractSource string `json:"AbstractSource"`
-		RelatedTopics  []struct {
-			Text     string `json:"Text"`
-			FirstURL string `json:"FirstURL"`
-		} `json:"RelatedTopics"`
-		Results []struct {
+		Results        []struct {
 			Text     string `json:"Text"`
 			FirstURL string `json:"FirstURL"`
 		} `json:"Results"`
@@ -151,21 +151,11 @@ func (c *Client) searchDuckDuckGo(ctx context.Context, query string, maxResults 
 		})
 	}
 
-	for _, r := range ddgResp.RelatedTopics {
-		if len(results) >= maxResults {
-			break
-		}
-		if r.FirstURL != "" {
-			results = append(results, output.SearchResult{
-				Title:   extractTitle(r.Text),
-				URL:     r.FirstURL,
-				Content: r.Text,
-			})
-		}
-	}
-
+	// RelatedTopics from DDG's Instant Answer API are disambiguation entries
+	// (e.g. "Apple Inc.", "Apple (fruit)"), not search results — surfacing them
+	// is the classic "searched one thing, got another" failure. Skip them and
+	// fall through to the HTML SERP scrape, which returns real web results.
 	if len(results) == 0 {
-		// DDG instant answers didn't return results, fall back to HTML lite scrape
 		return c.searchDDGLite(ctx, query, maxResults)
 	}
 
@@ -226,6 +216,19 @@ func (c *Client) searchDDGLite(ctx context.Context, query string, maxResults int
 	}
 
 	return results, nil
+}
+
+// detectLanguage returns a SearXNG language code inferred from the query's
+// script. Any Cyrillic character marks the query as Russian; everything else
+// defaults to English. This keeps engine results in the language the user is
+// actually searching in.
+func detectLanguage(query string) string {
+	for _, r := range query {
+		if r >= 0x0400 && r <= 0x04FF { // Cyrillic block
+			return "ru"
+		}
+	}
+	return "en"
 }
 
 func convertResults(apiResults []APIResult, maxResults int) []output.SearchResult {

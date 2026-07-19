@@ -19,6 +19,7 @@ type Config struct {
 	Dashboard    Dashboard    `yaml:"dashboard"`
 	Code         Code         `yaml:"code"`
 	Memory       MemoryConfig `yaml:"memory"`
+	Chat         ChatConfig   `yaml:"chat"`
 	SystemPrompt string       `yaml:"system_prompt_file"`
 	MailRu       MailRu       `yaml:"mailru"`
 	LegalReview  LegalReview  `yaml:"legal_review"`
@@ -69,7 +70,11 @@ type LLMModel struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
 	Fallback string `yaml:"fallback"`
-	APIKey   string `yaml:"api_key"`
+	// BaseURL overrides the OpenAI-compatible chat-completions endpoint for this
+	// model. Empty = OpenRouter default. Lets the chat model run on a different
+	// gateway (e.g. a6api) while vision/voice/embeddings stay on OpenRouter.
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
 }
 
 type Database struct {
@@ -123,6 +128,14 @@ type TravelSearch struct {
 	RapidAPIHost string `yaml:"rapidapi_host"`
 	Currency     string `yaml:"currency"`
 	ResultsLimit int    `yaml:"results_limit"`
+}
+
+type ChatConfig struct {
+	MaxTokens    int     `yaml:"max_tokens"`
+	MaxToolTurns int     `yaml:"max_tool_turns"`
+	MaxToolResultChars int `yaml:"max_tool_result_chars"`
+	ChatTemperature    float64 `yaml:"chat_temperature"`
+	ToolTemperature    float64 `yaml:"tool_temperature"`
 }
 
 type MemoryConfig struct {
@@ -268,5 +281,22 @@ func (c *Config) setDefaults() {
 		if c.LegalReview.CoordinatorMaxInputTokens == 0 {
 			c.LegalReview.CoordinatorMaxInputTokens = 80000
 		}
+	}
+
+	// Chat defaults
+	if c.Chat.MaxTokens == 0 {
+		c.Chat.MaxTokens = 4096
+	}
+	if c.Chat.MaxToolTurns == 0 {
+		c.Chat.MaxToolTurns = 25
+	}
+	if c.Chat.MaxToolResultChars == 0 {
+		c.Chat.MaxToolResultChars = 24000
+	}
+	if c.Chat.ChatTemperature == 0 {
+		c.Chat.ChatTemperature = 0.7
+	}
+	if c.Chat.ToolTemperature == 0 {
+		c.Chat.ToolTemperature = 0.2
 	}
 }

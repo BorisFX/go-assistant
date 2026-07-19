@@ -27,6 +27,8 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
+	"github.com/olegmatyakubov/go-assistant/internal/observability"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
@@ -94,7 +96,29 @@ func main() {
 	activityRepo := postgres.NewActivityRepo(db)
 
 	// Adapters
-	llmClient := openrouter.New(cfg.LLM.Chat.APIKey, cfg.LLM.Chat.Model, cfg.LLM.Chat.Fallback)
+	// Chat runs on cfg.LLM.Chat's provider — cfg.LLM.Chat.BaseURL may point it at a
+	// non-OpenRouter gateway (e.g. a6api). Vision, voice (STT) and background memory
+	// extraction stay on OpenRouter via orClient, since those models (gemini,
+	// whisper) live there. orKey falls back to the chat key for single-provider
+	// setups (e.g. the Yuri instance) that don't split providers.
+	llmClient := openrouter.New(cfg.LLM.Chat.APIKey, cfg.LLM.Chat.Model, cfg.LLM.Chat.Fallback, cfg.LLM.Chat.BaseURL)
+
+	visionModel := cfg.LLM.Vision.Model
+	if visionModel == "" {
+		visionModel = "google/gemini-2.5-flash"
+	}
+	orKey := cfg.LLM.Vision.APIKey
+	if orKey == "" {
+		orKey = cfg.LLM.Chat.APIKey
+	}
+	orClient := openrouter.New(orKey, visionModel, "", cfg.LLM.Vision.BaseURL)
+
+	// Wrap LLM clients with circuit breakers for graceful degradation.
+	var (
+		chatLLM   output.LLMProvider = observability.NewCircuitBreaker(llmClient, "chat")
+		visionLLM output.LLMProvider = observability.NewCircuitBreaker(orClient, "vision")
+	)
+	_ = visionLLM
 
 	searchClient := searxng.New(cfg.Search.SearXNGURL)
 	codeExecutor := claudecode.New(cfg.Code.DefaultDir, cfg.Code.Binary)
@@ -145,7 +169,7 @@ func main() {
 		FactLimit:           10,
 		SummaryDays:         7,
 	})
-	factExtractor := memory.NewExtractor(memorySvc, messageRepo, llmClient, cfg.Memory.ExtractionModel, cfg.Memory.FactExtractionInterval)
+	factExtractor := memory.NewExtractor(memorySvc, messageRepo, chatLLM, cfg.Memory.ExtractionModel, cfg.Memory.FactExtractionInterval)
 
 	// System prompt
 	systemPrompt := defaultSystemPrompt
@@ -161,8 +185,13 @@ func main() {
 
 	// Chat pipeline
 	classifier := chat.NewRuleClassifier()
-	toolLoop := chat.NewToolLoop(registry, 25)
-	pipeline := chat.NewPipeline(classifier, llmClient, registry, toolLoop, cfg.LLM.Vision.Model)
+	toolLoop := chat.NewToolLoop(registry, cfg.Chat.MaxToolTurns, cfg.Chat.MaxToolResultChars)
+	pipeline := chat.NewPipeline(classifier, chatLLM, visionLLM, registry, toolLoop, visionModel, chat.ChatConfig{
+		MaxTokens:          cfg.Chat.MaxTokens,
+		MaxToolResultChars: cfg.Chat.MaxToolResultChars,
+		ChatTemperature:    cfg.Chat.ChatTemperature,
+		ToolTemperature:    cfg.Chat.ToolTemperature,
+	})
 	chatService := chat.NewService(pipeline, messageRepo, activityRepo, memorySvc, factExtractor, systemPrompt)
 
 	// Timezone for clock-time cron schedules ("daily at 09:00").
@@ -198,7 +227,7 @@ func main() {
 		chatService,
 		tradingClient,
 		codeExecutor,
-		openrouter.NewSTTClient(cfg.LLM.Chat.APIKey),
+		openrouter.NewSTTClient(orKey),
 		memorySvc,
 		cronScheduler,
 	)
@@ -225,7 +254,7 @@ func main() {
 		extractRouter := extraction.NewRouter(llmClient,
 			extraction.WithLocal(extraction.NewLocalExtractor()),
 			extraction.WithVisionModel(cfg.LLM.Vision.Model))
-		runner := subagent.NewRunner(llmClient, registry)
+		runner := subagent.NewRunner(chatLLM, registry)
 		worker := legalreview.NewDigestWorker(runner, cfg.LegalReview.DigestModel, cfg.LegalReview.DigestMaxChars)
 		coord := legalreview.NewCoordinator(runner,
 			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
