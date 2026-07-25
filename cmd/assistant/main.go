@@ -18,7 +18,9 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/openrouter"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/postgres"
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/search"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/searxng"
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/tavily"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driving/httpapi"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driving/telegram"
 	"github.com/olegmatyakubov/go-assistant/internal/app/chat"
@@ -120,7 +122,15 @@ func main() {
 	)
 	_ = visionLLM
 
-	searchClient := searxng.New(cfg.Search.SearXNGURL)
+	// Web search: Tavily first (LLM-native, dated & freshness-filtered results),
+	// falling back to SearXNG/DuckDuckGo when Tavily is unconfigured or fails.
+	searchChain := search.NewChain()
+	if cfg.Search.Tavily.APIKey != "" {
+		searchChain.Add("tavily", tavily.New(cfg.Search.Tavily.APIKey, cfg.Search.Tavily.Endpoint))
+		slog.Info("tavily web search enabled")
+	}
+	searchChain.Add("searxng", searxng.New(cfg.Search.SearXNGURL))
+	var searchClient output.SearchProvider = searchChain
 	codeExecutor := claudecode.New(cfg.Code.DefaultDir, cfg.Code.Binary)
 
 	var tradingClient *cryptoai.Client

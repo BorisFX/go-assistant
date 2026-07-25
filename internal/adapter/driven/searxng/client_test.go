@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/searxng"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
 func TestClient_Search(t *testing.T) {
@@ -33,7 +34,7 @@ func TestClient_Search(t *testing.T) {
 	defer server.Close()
 
 	client := searxng.New(server.URL)
-	results, err := client.Search(context.Background(), "Go developer Cambodia", 5)
+	results, err := client.Search(context.Background(), "Go developer Cambodia", output.SearchOptions{MaxResults: 5})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -74,7 +75,7 @@ func TestClient_Search_LanguageParam(t *testing.T) {
 			defer server.Close()
 
 			client := searxng.New(server.URL)
-			if _, err := client.Search(context.Background(), tc.query, 5); err != nil {
+			if _, err := client.Search(context.Background(), tc.query, output.SearchOptions{MaxResults: 5}); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if gotLang != tc.want {

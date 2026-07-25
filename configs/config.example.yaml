@@ -14,7 +14,7 @@ telegram:
 llm:
   chat:
     provider: openrouter
-    model: "deepseek/deepseek-v4-flash"
+    model: "google/gemini-3.6-flash"
     fallback: "deepseek/deepseek-v4-pro"
     api_key: ${OPENROUTER_KEY}
   embedding:
@@ -33,6 +33,13 @@ database:
   password: ${DB_PASSWORD}
 
 search:
+  # Tavily is the primary web-search provider (LLM-native: dated, ranked results
+  # with a freshness filter). Get a key at https://tavily.com. Leave api_key empty
+  # to fall back to SearXNG/DuckDuckGo.
+  tavily:
+    api_key: ${TAVILY_KEY}
+    # endpoint: ""   # optional; defaults to https://api.tavily.com/search
+  # Fallback meta-search. Used when Tavily is unconfigured or fails.
   searxng_url: "http://localhost:8888"
 
 trading:

@@ -11,7 +11,7 @@ import (
 
 type mockSearchProvider struct{}
 
-func (m *mockSearchProvider) Search(ctx context.Context, query string, maxResults int) ([]output.SearchResult, error) {
+func (m *mockSearchProvider) Search(ctx context.Context, query string, opts output.SearchOptions) ([]output.SearchResult, error) {
 	return []output.SearchResult{
 		{Title: "Result 1", URL: "https://example.com/1", Content: "content 1"},
 		{Title: "Result 2", URL: "https://example.com/2", Content: "content 2"},

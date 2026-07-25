@@ -92,6 +92,16 @@ func (d Database) DSN() string {
 
 type Search struct {
 	SearXNGURL string `yaml:"searxng_url"`
+	// Tavily is the primary web-search provider (https://tavily.com) — LLM-native,
+	// returns dated, ranked results with a freshness filter. When APIKey is empty
+	// the bot falls back to SearXNG/DuckDuckGo. Endpoint is optional (defaults to
+	// the public API).
+	Tavily TavilyConfig `yaml:"tavily"`
+}
+
+type TavilyConfig struct {
+	APIKey   string `yaml:"api_key"`
+	Endpoint string `yaml:"endpoint"`
 }
 
 type Trading struct {

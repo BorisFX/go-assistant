@@ -38,9 +38,14 @@ func New(baseURL string) *Client {
 	}
 }
 
-func (c *Client) Search(ctx context.Context, query string, maxResults int) ([]output.SearchResult, error) {
+func (c *Client) Search(ctx context.Context, query string, opts output.SearchOptions) ([]output.SearchResult, error) {
+	maxResults := opts.MaxResults
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
 	// Try SearXNG first
-	results, err := c.searchSearXNG(ctx, query, maxResults)
+	results, err := c.searchSearXNG(ctx, query, maxResults, opts)
 	if err == nil && len(results) > 0 {
 		return results, nil
 	}
@@ -49,7 +54,7 @@ func (c *Client) Search(ctx context.Context, query string, maxResults int) ([]ou
 	return c.searchDuckDuckGo(ctx, query, maxResults)
 }
 
-func (c *Client) searchSearXNG(ctx context.Context, query string, maxResults int) ([]output.SearchResult, error) {
+func (c *Client) searchSearXNG(ctx context.Context, query string, maxResults int, opts output.SearchOptions) ([]output.SearchResult, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("searxng not configured")
 	}
@@ -67,6 +72,15 @@ func (c *Client) searchSearXNG(ctx context.Context, query string, maxResults int
 	// wrong-language noise (e.g. a Russian query yields unrelated English/Chinese
 	// pages). Derive the language from the query script so results stay on topic.
 	q.Set("language", detectLanguage(query))
+	// Freshness filter. SearXNG accepts day/week/month/year — pass it through so a
+	// "today" query doesn't come back with decade-old archive pages.
+	if tr := normalizeTimeRange(opts.TimeRange); tr != "" {
+		q.Set("time_range", tr)
+	}
+	// News topic → SearXNG "news" category, which prefers dated news engines.
+	if opts.Topic == "news" {
+		q.Set("categories", "news")
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -222,6 +236,18 @@ func (c *Client) searchDDGLite(ctx context.Context, query string, maxResults int
 // script. Any Cyrillic character marks the query as Russian; everything else
 // defaults to English. This keeps engine results in the language the user is
 // actually searching in.
+// normalizeTimeRange maps caller time ranges to the values SearXNG accepts
+// (day/week/month/year). Unknown values are dropped rather than passed blindly,
+// since a bad time_range makes SearXNG reject the whole request.
+func normalizeTimeRange(tr string) string {
+	switch tr {
+	case "day", "week", "month", "year":
+		return tr
+	default:
+		return ""
+	}
+}
+
 func detectLanguage(query string) string {
 	for _, r := range query {
 		if r >= 0x0400 && r <= 0x04FF { // Cyrillic block

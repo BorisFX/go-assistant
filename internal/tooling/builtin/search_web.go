@@ -20,7 +20,10 @@ func (s *SearchWeb) Name() string { return "search_web" }
 func (s *SearchWeb) Description() string {
 	return "Search the internet for information. Pass a short keyword query (2-6 words), " +
 		"not a full sentence — search engines match keywords, so a conversational phrase " +
-		"returns irrelevant results. Keep the query in the same language as the topic."
+		"returns irrelevant results. Keep the query in the same language as the topic. " +
+		"For current events or 'today' questions, set topic=\"news\" and a time_range " +
+		"(e.g. \"week\") so results are recent — otherwise old archive pages can surface. " +
+		"Each result may include published_date; prefer the most recent ones."
 }
 func (s *SearchWeb) Category() string { return "search" }
 
@@ -36,6 +39,17 @@ func (s *SearchWeb) Schema() json.RawMessage {
 				"type": "integer",
 				"description": "Maximum number of results to return",
 				"default": 5
+			},
+			"topic": {
+				"type": "string",
+				"enum": ["general", "news"],
+				"description": "Use \"news\" for current events / recent developments so results come from dated news sources. Default \"general\".",
+				"default": "general"
+			},
+			"time_range": {
+				"type": "string",
+				"enum": ["day", "week", "month", "year"],
+				"description": "Restrict results by recency. Set this for anything time-sensitive (\"today\", \"latest\", \"2026\") — e.g. \"day\" or \"week\". Omit for evergreen facts."
 			}
 		},
 		"required": ["query"]
@@ -45,6 +59,8 @@ func (s *SearchWeb) Schema() json.RawMessage {
 type searchWebParams struct {
 	Query      string `json:"query"`
 	MaxResults int    `json:"max_results"`
+	Topic      string `json:"topic"`
+	TimeRange  string `json:"time_range"`
 }
 
 func (s *SearchWeb) Execute(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
@@ -57,7 +73,11 @@ func (s *SearchWeb) Execute(ctx context.Context, params json.RawMessage) (json.R
 		p.MaxResults = 5
 	}
 
-	results, err := s.provider.Search(ctx, p.Query, p.MaxResults)
+	results, err := s.provider.Search(ctx, p.Query, output.SearchOptions{
+		MaxResults: p.MaxResults,
+		Topic:      p.Topic,
+		TimeRange:  p.TimeRange,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
 	}
