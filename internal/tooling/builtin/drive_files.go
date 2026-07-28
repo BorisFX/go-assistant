@@ -19,6 +19,7 @@ type DriveClient interface {
 	Download(ctx context.Context, fileID string) ([]byte, error)
 	Upload(ctx context.Context, parentID, name, mimeType string, content []byte) (gworkspace.FileInfo, error)
 	EnsureFolder(ctx context.Context, parentID, name string) (gworkspace.FileInfo, error)
+	Move(ctx context.Context, fileID, newParentID string) (gworkspace.FileInfo, error)
 	ResolvePath(ctx context.Context, path string) (string, error)
 }
 
@@ -47,11 +48,11 @@ func (d *DriveFiles) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["list", "search", "read", "download", "upload", "mkdir"],
+				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move"],
 				"description": "Operation to perform"
 			},
-			"path": {"type": "string", "description": "Folder path from the drive root, e.g. Ленина_42/10_Земля. Empty means the root"},
-			"file_id": {"type": "string", "description": "Drive file id, for read and download"},
+			"path": {"type": "string", "description": "Folder path from the drive root, e.g. Vertex/03_Техпланы. Empty means the root. For move it is the destination folder"},
+			"file_id": {"type": "string", "description": "Drive file id, for read, download and move"},
 			"query": {"type": "string", "description": "Text matched against file names, for search"},
 			"name": {"type": "string", "description": "File or folder name, for upload, mkdir and download"},
 			"content": {"type": "string", "description": "Text content, for upload"}
@@ -88,6 +89,8 @@ func (d *DriveFiles) Execute(ctx context.Context, params json.RawMessage) (json.
 		return d.upload(ctx, p.Path, p.Name, p.Content)
 	case "mkdir":
 		return d.mkdir(ctx, p.Path, p.Name)
+	case "move":
+		return d.move(ctx, p.FileID, p.Path)
 	default:
 		return nil, fmt.Errorf("unknown action: %s", p.Action)
 	}
@@ -201,4 +204,21 @@ func (d *DriveFiles) mkdir(ctx context.Context, path, name string) (json.RawMess
 		return nil, err
 	}
 	return json.Marshal(info)
+}
+
+// move relocates a file into the folder at path. Used to sort documents out of
+// _Разобрать into the stage folder they belong to.
+func (d *DriveFiles) move(ctx context.Context, fileID, path string) (json.RawMessage, error) {
+	if fileID == "" {
+		return nil, fmt.Errorf("move: file_id is required")
+	}
+	target, err := d.client.ResolvePath(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := d.client.Move(ctx, fileID, target)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"moved": info, "to": path})
 }

@@ -243,3 +243,42 @@ func TestDriveFilesUnknownAction(t *testing.T) {
 		t.Fatal("expected an error for an unknown action")
 	}
 }
+
+func (f *fakeDrive) Move(ctx context.Context, fileID, newParentID string) (gworkspace.FileInfo, error) {
+	f.lastParent = newParentID
+	return gworkspace.FileInfo{ID: fileID, Name: "moved.pdf"}, nil
+}
+
+func TestDriveFilesMoveResolvesDestination(t *testing.T) {
+	fake := &fakeDrive{resolved: "stage-3"}
+	tool := builtin.NewDriveFiles(fake, t.TempDir())
+
+	out, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"action":"move","file_id":"f1","path":"Vertex/03_Техпланы"}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if fake.lastPath != "Vertex/03_Техпланы" {
+		t.Errorf("destination path: got %q", fake.lastPath)
+	}
+	if fake.lastParent != "stage-3" {
+		t.Errorf("move must use the resolved folder id, got %q", fake.lastParent)
+	}
+	var result struct {
+		To string `json:"to"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("invalid result: %v", err)
+	}
+	if result.To != "Vertex/03_Техпланы" {
+		t.Errorf("result must name the destination, got %q", result.To)
+	}
+}
+
+func TestDriveFilesMoveRequiresFileID(t *testing.T) {
+	tool := builtin.NewDriveFiles(&fakeDrive{}, t.TempDir())
+
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"action":"move","path":"Vertex"}`)); err == nil {
+		t.Fatal("expected an error when file_id is missing")
+	}
+}

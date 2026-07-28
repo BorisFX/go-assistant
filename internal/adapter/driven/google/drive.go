@@ -184,6 +184,39 @@ func (d *Drive) EnsureFolder(ctx context.Context, parentID, name string) (FileIn
 	return toFileInfo(f), nil
 }
 
+// Move reparents a file. Drive has no move operation: a file's location is its
+// parent list, so the current parents are read first and swapped for the new
+// one. Copy-and-delete would work too but would break every existing link to
+// the file, and links are how the registry points at documents.
+func (d *Drive) Move(ctx context.Context, fileID, newParentID string) (FileInfo, error) {
+	if fileID == "" {
+		return FileInfo{}, fmt.Errorf("drive move: file id is required")
+	}
+	if newParentID == "" {
+		return FileInfo{}, fmt.Errorf("drive move: target folder id is required")
+	}
+
+	current, err := d.svc.Files.Get(fileID).Fields("parents").
+		SupportsAllDrives(true).Context(ctx).Do()
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("drive move: read parents of %s: %w", fileID, err)
+	}
+
+	call := d.svc.Files.Update(fileID, nil).
+		AddParents(newParentID).
+		Fields("id,name,mimeType,size,modifiedTime").
+		SupportsAllDrives(true)
+	if len(current.Parents) > 0 {
+		call = call.RemoveParents(strings.Join(current.Parents, ","))
+	}
+
+	f, err := call.Context(ctx).Do()
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("drive move %s: %w", fileID, err)
+	}
+	return toFileInfo(f), nil
+}
+
 // ResolvePath walks a slash-separated path from the drive root and returns the
 // folder id. An empty path resolves to the root without any API call.
 func (d *Drive) ResolvePath(ctx context.Context, path string) (string, error) {

@@ -215,3 +215,46 @@ func TestDriveResolvePathMissingFolder(t *testing.T) {
 		t.Fatal("expected an error for a missing folder")
 	}
 }
+
+// Sorting documents into stage folders is the whole point of the workspace, so
+// move is a first-class operation rather than delete-and-reupload.
+func TestDriveMoveReparentsFile(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"id":"f1","parents":["old-parent"]}`,
+		`{"id":"f1","name":"РС 1.pdf","mimeType":"application/pdf"}`,
+	)
+
+	info, err := newTestDrive(t, stub).Move(context.Background(), "f1", "new-parent")
+	if err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if info.ID != "f1" {
+		t.Errorf("id: got %q", info.ID)
+	}
+	if len(stub.queries) != 2 {
+		t.Fatalf("expected a lookup then an update, got %d requests", len(stub.queries))
+	}
+
+	q := stub.queries[1]
+	if q.Get("addParents") != "new-parent" {
+		t.Errorf("addParents: got %q", q.Get("addParents"))
+	}
+	if q.Get("removeParents") != "old-parent" {
+		t.Errorf("removeParents: got %q", q.Get("removeParents"))
+	}
+	if q.Get("supportsAllDrives") != "true" {
+		t.Error("supportsAllDrives must be set on a shared drive")
+	}
+}
+
+func TestDriveMoveRequiresIDs(t *testing.T) {
+	stub := newDriveStub(t)
+	d := newTestDrive(t, stub)
+
+	if _, err := d.Move(context.Background(), "", "p"); err == nil {
+		t.Error("expected an error for an empty file id")
+	}
+	if _, err := d.Move(context.Background(), "f", ""); err == nil {
+		t.Error("expected an error for an empty target folder")
+	}
+}
