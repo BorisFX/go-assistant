@@ -222,7 +222,8 @@ func main() {
 
 	// Chat pipeline
 	classifier := chat.NewRuleClassifier()
-	toolLoop := chat.NewToolLoop(registry, cfg.Chat.MaxToolTurns, cfg.Chat.MaxToolResultChars)
+	toolLoop := chat.NewToolLoop(registry, cfg.Chat.MaxToolTurns, cfg.Chat.MaxToolResultChars).
+		WithActivityRepo(activityRepo)
 	pipeline := chat.NewPipeline(classifier, chatLLM, visionLLM, registry, toolLoop, visionModel, chat.ChatConfig{
 		MaxTokens:          cfg.Chat.MaxTokens,
 		MaxToolResultChars: cfg.Chat.MaxToolResultChars,

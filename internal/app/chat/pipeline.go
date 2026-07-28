@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
@@ -58,6 +60,7 @@ func NewPipeline(
 
 type ToolLoop struct {
 	registry           output.ToolRegistry
+	activityRepo       output.ActivityRepository
 	maxTurns           int
 	maxToolResultChars int
 	maxTokens          int
@@ -69,6 +72,46 @@ func NewToolLoop(registry output.ToolRegistry, maxTurns, maxToolResultChars int)
 		maxTurns:           maxTurns,
 		maxToolResultChars: maxToolResultChars,
 		maxTokens:          4096,
+	}
+}
+
+// WithActivityRepo enables tool-call telemetry. Without it there is no way to
+// tell whether the model actually used a tool or only claimed to, which makes
+// hallucinated "done" reports indistinguishable from real work.
+func (tl *ToolLoop) WithActivityRepo(repo output.ActivityRepository) *ToolLoop {
+	tl.activityRepo = repo
+	return tl
+}
+
+const maxRecordedArgs = 500
+
+// recordCall persists one tool invocation. Failures to record are logged and
+// swallowed: telemetry must never break the conversation.
+func (tl *ToolLoop) recordCall(ctx context.Context, call entity.ToolCall, durationMs int64, failure string) {
+	if tl.activityRepo == nil {
+		return
+	}
+
+	args := call.Args
+	if len(args) > maxRecordedArgs {
+		args = args[:maxRecordedArgs]
+	}
+	fields := map[string]any{"args": json.RawMessage(args), "ok": failure == ""}
+	if failure != "" {
+		fields["error"] = failure
+	}
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		// A model can emit malformed args, which are then not valid JSON.
+		fields["args"] = args
+		meta, _ = json.Marshal(fields)
+	}
+
+	activity := entity.NewActivity(entity.ActivityToolCall, call.Name, "chat", uuid.Nil)
+	activity.DurationMs = durationMs
+	activity.Metadata = string(meta)
+	if err := tl.activityRepo.Save(ctx, activity); err != nil {
+		slog.Error("failed to record tool call", "tool", call.Name, "error", err)
 	}
 }
 
@@ -192,6 +235,7 @@ func (tl *ToolLoop) Run(
 				defer wg.Done()
 				tool, err := tl.registry.GetTool(tc.Name)
 				if err != nil {
+					tl.recordCall(ctx, tc, 0, "tool not registered on this instance")
 					results[i] = toolResult{i, output.LLMMessage{
 						Role:       entity.RoleTool,
 						Content:    fmt.Sprintf("Error: tool %q not found", tc.Name),
@@ -205,9 +249,12 @@ func (tl *ToolLoop) Run(
 				}
 
 				slog.Info("tool loop: executing tool", "turn", turn, "tool", tc.Name)
+				start := time.Now()
 				result, err := tool.Execute(ctx, json.RawMessage(tc.Args))
+				durationMs := time.Since(start).Milliseconds()
 				if err != nil {
 					slog.Warn("tool loop: tool error", "tool", tc.Name, "error", err)
+					tl.recordCall(ctx, tc, durationMs, err.Error())
 					results[i] = toolResult{i, output.LLMMessage{
 						Role:       entity.RoleTool,
 						Content:    fmt.Sprintf("Error: %v", err),
@@ -215,6 +262,8 @@ func (tl *ToolLoop) Run(
 					}}
 					return
 				}
+
+				tl.recordCall(ctx, tc, durationMs, "")
 
 				// Truncate tool results to prevent LLM overload. Smart truncation:
 				// keep beginning (context) + end (conclusion) so key info survives.
