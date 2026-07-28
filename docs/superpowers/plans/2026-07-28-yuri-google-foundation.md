@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Дать Брии авторизованный доступ к Google Drive и Sheets через service account и инструмент `drive_files` для работы с документами проектов.
+**Goal:** Дать Юри авторизованный доступ к Google Drive и Sheets через service account и инструмент `drive_files` для работы с документами проектов.
 
 **Architecture:** Driven-адаптер `internal/adapter/driven/google/` инкапсулирует официальный SDK. Учётные данные загружаются один раз и раздают `option.ClientOption` для каждого API — это же место подстановки позволяет тестам подменять эндпоинт на `httptest` без обращения к живому Google. Инструмент `drive_files` повторяет action-dispatch контракт существующего `cloud_files`, чтобы модель работала с привычной формой вызова.
 
 **Tech Stack:** Go 1.25, `google.golang.org/api/drive/v3`, `google.golang.org/api/sheets/v4`, `golang.org/x/oauth2/google`, стандартный `testing` + `httptest`.
 
-**Спек:** `docs/superpowers/specs/2026-07-28-bria-google-workspace-design.md`
+**Спек:** `docs/superpowers/specs/2026-07-28-yuri-google-workspace-design.md`
 
 ## Global Constraints
 
@@ -73,7 +73,7 @@ func TestGoogleDefaults(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, `
 google:
   credentials_file: /tmp/sa.json
-  impersonate: bria@example.com
+  impersonate: info@samostrou.net
   drive:
     root_folder_id: "0ABC"
   sheets:
@@ -90,7 +90,7 @@ google:
 	if cfg.Google.Sheets.RegistrySheet != "Проекты" {
 		t.Errorf("registry_sheet default: got %q", cfg.Google.Sheets.RegistrySheet)
 	}
-	if cfg.Google.Gmail.ProcessedLabel != "Брия/Обработано" {
+	if cfg.Google.Gmail.ProcessedLabel != "Обработано" {
 		t.Errorf("processed_label default: got %q", cfg.Google.Gmail.ProcessedLabel)
 	}
 	if cfg.Google.Gmail.PollInterval != 15*time.Minute {
@@ -201,7 +201,7 @@ func (g Google) Enabled() bool { return g.CredentialsFile != "" }
 		}
 		if c.Google.Gmail.Enabled {
 			if c.Google.Gmail.ProcessedLabel == "" {
-				c.Google.Gmail.ProcessedLabel = "Брия/Обработано"
+				c.Google.Gmail.ProcessedLabel = "Обработано"
 			}
 			if c.Google.Gmail.IngestQuery == "" {
 				c.Google.Gmail.IngestQuery = "in:inbox -label:" + c.Google.Gmail.ProcessedLabel
@@ -239,7 +239,7 @@ google:
     registry_sheet: "Проекты"
   gmail:
     enabled: false
-    processed_label: "Брия/Обработано"
+    processed_label: "Обработано"
     poll_interval: 15m
 ```
 
@@ -296,7 +296,7 @@ const testKeyJSON = `{
   "project_id": "test",
   "private_key_id": "abc",
   "private_key": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA0Z0Z0Z0Z0Z0Z0Z0Z\n-----END PRIVATE KEY-----\n",
-  "client_email": "bria-bot@test.iam.gserviceaccount.com",
+  "client_email": "yuri-bot@test.iam.gserviceaccount.com",
   "client_id": "123",
   "token_uri": "https://oauth2.googleapis.com/token"
 }`
@@ -323,11 +323,11 @@ func TestLoadCredentialsValid(t *testing.T) {
 	if err := os.WriteFile(path, []byte(testKeyJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	creds, err := gauth.LoadCredentials(path, "bria@example.com")
+	creds, err := gauth.LoadCredentials(path, "info@samostrou.net")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if creds.Email() != "bria-bot@test.iam.gserviceaccount.com" {
+	if creds.Email() != "yuri-bot@test.iam.gserviceaccount.com" {
 		t.Errorf("email: got %q", creds.Email())
 	}
 }
@@ -1508,7 +1508,7 @@ func TestClassifierRoutesDriveQueries(t *testing.T) {
 
 Добавить импорт `"slices"`.
 
-Третий случай намеренно взят из существующего теста: на Брие документы живут в Drive, поэтому запрос про недвижимость обязан предлагать оба хранилища. Реестр из Task 6 отсеет то, чего нет на конкретном инстансе.
+Третий случай намеренно взят из существующего теста: у Юри документы живут в Drive, поэтому запрос про недвижимость обязан предлагать оба хранилища. Реестр из Task 6 отсеет то, чего нет на конкретном инстансе.
 
 - [ ] **Step 2: Убедиться, что тест падает**
 
@@ -1593,7 +1593,7 @@ Sheets-адаптер из Task 4 собран и покрыт тестами, �
 
 ## Проверка после этапа
 
-С реальными учётными данными в конфиге Брии:
+С реальными учётными данными в конфиге Юри:
 
 1. `создай папку test в корне диска` — появляется папка в общем диске;
 2. `покажи файлы на диске` — возвращает содержимое корня;
