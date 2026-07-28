@@ -31,6 +31,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
+	"github.com/olegmatyakubov/go-assistant/internal/app/projects"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
 	"github.com/olegmatyakubov/go-assistant/internal/observability"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
@@ -38,6 +39,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/sheets/v4"
 )
 
 //go:embed all:dashboard_dist
@@ -190,6 +192,19 @@ func main() {
 		slog.Info("google drive tool enabled",
 			"service_account", creds.Email(),
 			"root_folder_id", cfg.Google.Drive.RootFolderID)
+
+		sheetsOpts, err := creds.ClientOptions(context.Background(), "", sheets.SpreadsheetsScope)
+		if err != nil {
+			slog.Error("failed to build google sheets auth", "error", err)
+			os.Exit(1)
+		}
+		sheetsClient, err := gworkspace.NewSheets(context.Background(), cfg.Google.Sheets.RegistryID, sheetsOpts...)
+		if err != nil {
+			slog.Error("failed to create google sheets client", "error", err)
+			os.Exit(1)
+		}
+		registry.Register(builtin.NewProjects(projects.NewService(sheetsClient, driveClient)))
+		slog.Info("projects tool enabled", "registry_id", cfg.Google.Sheets.RegistryID)
 	}
 
 	// Memory system
