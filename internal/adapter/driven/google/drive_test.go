@@ -319,3 +319,56 @@ func TestEnsurePathExistingChainCreatesNothing(t *testing.T) {
 		t.Errorf("expected two lookups and no creation, got %d requests", len(stub.queries))
 	}
 }
+
+// Google-native files have no bytes to download — the API refuses and points at
+// export. Templates and the roadmap live as Docs, so reading them is not an
+// edge case but the main path.
+func TestDriveDownloadExportsGoogleDoc(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"id":"doc1","mimeType":"application/vnd.google-apps.document"}`,
+		`текст шаблона`,
+	)
+
+	data, err := newTestDrive(t, stub).Download(context.Background(), "doc1")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if string(data) != "текст шаблона" {
+		t.Errorf("content: got %q", data)
+	}
+	if got := stub.queries[1].Get("mimeType"); got != "text/plain" {
+		t.Errorf("a document must be exported as text/plain, got %q", got)
+	}
+}
+
+func TestDriveDownloadExportsSpreadsheetAsCSV(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"id":"sh1","mimeType":"application/vnd.google-apps.spreadsheet"}`,
+		"a,b\n1,2",
+	)
+
+	if _, err := newTestDrive(t, stub).Download(context.Background(), "sh1"); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if got := stub.queries[1].Get("mimeType"); got != "text/csv" {
+		t.Errorf("a spreadsheet must be exported as csv, got %q", got)
+	}
+}
+
+func TestDriveDownloadKeepsBinaryPath(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"id":"p1","mimeType":"application/pdf"}`,
+		`%PDF-1.4`,
+	)
+
+	data, err := newTestDrive(t, stub).Download(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if string(data) != "%PDF-1.4" {
+		t.Errorf("content: got %q", data)
+	}
+	if stub.queries[1].Get("mimeType") != "" {
+		t.Error("a pdf must be downloaded, not exported")
+	}
+}

@@ -114,10 +114,44 @@ func (d *Drive) Search(ctx context.Context, text string) ([]FileInfo, error) {
 	return d.list(ctx, fmt.Sprintf("name contains '%s' and trashed = false", escapeQuery(text)))
 }
 
+// googleNativePrefix marks formats that exist only inside Google and therefore
+// have no bytes to download; they must be exported to a real format instead.
+const googleNativePrefix = "application/vnd.google-apps."
+
+// exportFormat is the text form each native type is converted to. Text keeps
+// documents readable by the model and by pdftotext-style tooling downstream.
+func exportFormat(mimeType string) string {
+	switch mimeType {
+	case googleNativePrefix + "spreadsheet":
+		return "text/csv"
+	default:
+		return "text/plain"
+	}
+}
+
 func (d *Drive) Download(ctx context.Context, fileID string) ([]byte, error) {
 	if fileID == "" {
 		return nil, fmt.Errorf("drive download: file id is required")
 	}
+
+	meta, err := d.svc.Files.Get(fileID).Fields("mimeType").
+		SupportsAllDrives(true).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("drive download: read type of %s: %w", fileID, err)
+	}
+	if strings.HasPrefix(meta.MimeType, googleNativePrefix) {
+		resp, err := d.svc.Files.Export(fileID, exportFormat(meta.MimeType)).Context(ctx).Download()
+		if err != nil {
+			return nil, fmt.Errorf("drive export %s: %w", fileID, err)
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("drive export %s: %w", fileID, err)
+		}
+		return data, nil
+	}
+
 	resp, err := d.svc.Files.Get(fileID).SupportsAllDrives(true).Context(ctx).Download()
 	if err != nil {
 		return nil, fmt.Errorf("drive download %s: %w", fileID, err)
