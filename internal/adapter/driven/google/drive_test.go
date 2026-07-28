@@ -372,3 +372,27 @@ func TestDriveDownloadKeepsBinaryPath(t *testing.T) {
 		t.Error("a pdf must be downloaded, not exported")
 	}
 }
+
+// A commercial proposal is sent to a client, so it must be a real document they
+// can open and comment on — not a text file sitting in a folder.
+func TestDriveCreateDocConvertsToGoogleDoc(t *testing.T) {
+	stub := newDriveStub(t, `{"id":"doc1","name":"КП Vertex","mimeType":"application/vnd.google-apps.document"}`)
+
+	info, err := newTestDrive(t, stub).CreateDoc(context.Background(), "folder-1", "КП Vertex", "текст предложения")
+	if err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+	if info.ID != "doc1" {
+		t.Errorf("id: got %q", info.ID)
+	}
+	if info.MimeType != "application/vnd.google-apps.document" {
+		t.Errorf("must be a Google Doc, got %q", info.MimeType)
+	}
+}
+
+func TestDriveCreateDocRequiresName(t *testing.T) {
+	stub := newDriveStub(t)
+	if _, err := newTestDrive(t, stub).CreateDoc(context.Background(), "f", "", "x"); err == nil {
+		t.Fatal("expected an error for an empty name")
+	}
+}

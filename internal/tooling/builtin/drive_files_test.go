@@ -319,3 +319,42 @@ func TestDriveFilesListDoesNotCreateFolders(t *testing.T) {
 		t.Error("list must not create folders")
 	}
 }
+
+func (f *fakeDrive) CreateDoc(ctx context.Context, parentID, name, text string) (gworkspace.FileInfo, error) {
+	f.lastParent, f.lastName = parentID, name
+	f.lastUploaded = []byte(text)
+	return gworkspace.FileInfo{ID: "doc1", Name: name, MimeType: "application/vnd.google-apps.document"}, nil
+}
+
+func TestDriveFilesCreateDocReturnsLink(t *testing.T) {
+	fake := &fakeDrive{resolved: "stage-1"}
+	tool := builtin.NewDriveFiles(fake, t.TempDir())
+
+	out, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"action":"create_doc","path":"Vertex/01_Подготовка","name":"КП Vertex","content":"текст"}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var result struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("invalid result: %v", err)
+	}
+	if result.URL != "https://docs.google.com/document/d/doc1/edit" {
+		t.Errorf("a shareable link is the point of the action, got %q", result.URL)
+	}
+	if string(fake.lastUploaded) != "текст" {
+		t.Errorf("content: got %q", fake.lastUploaded)
+	}
+}
+
+func TestDriveFilesCreateDocRequiresContent(t *testing.T) {
+	tool := builtin.NewDriveFiles(&fakeDrive{}, t.TempDir())
+
+	if _, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"action":"create_doc","name":"КП","path":"Vertex"}`)); err == nil {
+		t.Fatal("expected an error for empty content")
+	}
+}

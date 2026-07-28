@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -184,6 +185,32 @@ func (d *Drive) Upload(ctx context.Context, parentID, name, mimeType string, con
 		Context(ctx).Do()
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("drive upload %s: %w", name, err)
+	}
+	return toFileInfo(f), nil
+}
+
+// docMime is Google's native document type. Uploading text under it makes
+// Drive convert the content, which is how a Doc gets created through this API.
+const docMime = googleNativePrefix + "document"
+
+// CreateDoc writes text as a Google Doc. Proposals and roadmaps go to clients
+// and get edited together, which a plain file in Drive does not support.
+func (d *Drive) CreateDoc(ctx context.Context, parentID, name, text string) (FileInfo, error) {
+	if name == "" {
+		return FileInfo{}, fmt.Errorf("drive: document name is required")
+	}
+	if parentID == "" {
+		parentID = d.root
+	}
+
+	meta := &drive.File{Name: name, MimeType: docMime, Parents: []string{parentID}}
+	f, err := d.svc.Files.Create(meta).
+		Media(strings.NewReader(text), googleapi.ContentType("text/plain")).
+		Fields("id,name,mimeType,modifiedTime").
+		SupportsAllDrives(true).
+		Context(ctx).Do()
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("drive create doc %s: %w", name, err)
 	}
 	return toFileInfo(f), nil
 }

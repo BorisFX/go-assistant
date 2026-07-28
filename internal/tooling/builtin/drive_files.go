@@ -20,6 +20,7 @@ type DriveClient interface {
 	Upload(ctx context.Context, parentID, name, mimeType string, content []byte) (gworkspace.FileInfo, error)
 	EnsureFolder(ctx context.Context, parentID, name string) (gworkspace.FileInfo, error)
 	Move(ctx context.Context, fileID, newParentID string) (gworkspace.FileInfo, error)
+	CreateDoc(ctx context.Context, parentID, name, text string) (gworkspace.FileInfo, error)
 	ResolvePath(ctx context.Context, path string) (string, error)
 	EnsurePath(ctx context.Context, path string) (string, error)
 }
@@ -38,7 +39,7 @@ func NewDriveFiles(client DriveClient, filesDir string) *DriveFiles {
 func (d *DriveFiles) Name() string { return "drive_files" }
 
 func (d *DriveFiles) Description() string {
-	return "Google Drive project workspace: list, search, read, download, upload files and create folders"
+	return "Google Drive project workspace: list, search, read, download, upload, move files, create folders and Google Docs"
 }
 
 func (d *DriveFiles) Category() string { return "files" }
@@ -49,14 +50,14 @@ func (d *DriveFiles) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move"],
+				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move", "create_doc"],
 				"description": "Operation to perform"
 			},
 			"path": {"type": "string", "description": "Folder path from the drive root, e.g. Vertex/03_Техпланы. Empty means the root. For move it is the destination folder"},
 			"file_id": {"type": "string", "description": "Drive file id, for read, download and move"},
 			"query": {"type": "string", "description": "Text matched against file names, for search"},
 			"name": {"type": "string", "description": "File or folder name, for upload, mkdir and download"},
-			"content": {"type": "string", "description": "Text content, for upload"}
+			"content": {"type": "string", "description": "Text content, for upload and create_doc"}
 		},
 		"required": ["action"]
 	}`)
@@ -92,6 +93,8 @@ func (d *DriveFiles) Execute(ctx context.Context, params json.RawMessage) (json.
 		return d.mkdir(ctx, p.Path, p.Name)
 	case "move":
 		return d.move(ctx, p.FileID, p.Path)
+	case "create_doc":
+		return d.createDoc(ctx, p.Path, p.Name, p.Content)
 	default:
 		return nil, fmt.Errorf("unknown action: %s", p.Action)
 	}
@@ -222,4 +225,27 @@ func (d *DriveFiles) move(ctx context.Context, fileID, path string) (json.RawMes
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"moved": info, "to": path})
+}
+
+// createDoc writes text as a Google Doc so it can be shared with a client and
+// edited together, which a plain uploaded file cannot.
+func (d *DriveFiles) createDoc(ctx context.Context, path, name, content string) (json.RawMessage, error) {
+	if name == "" {
+		return nil, fmt.Errorf("create_doc: name is required")
+	}
+	if content == "" {
+		return nil, fmt.Errorf("create_doc: content is required")
+	}
+	folderID, err := d.client.EnsurePath(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := d.client.CreateDoc(ctx, folderID, name, content)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"document": info,
+		"url":      "https://docs.google.com/document/d/" + info.ID + "/edit",
+	})
 }
