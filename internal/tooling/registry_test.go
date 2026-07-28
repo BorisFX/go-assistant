@@ -139,3 +139,31 @@ func TestRegistry_Register_DuplicateName_ReturnsError(t *testing.T) {
 		t.Error("expected error for duplicate registration")
 	}
 }
+
+// Classifier rules are shared across instances while the tool set is
+// per-instance, so a name the instance does not have must not sink the batch.
+func TestLoadSchemasSkipsUnregisteredTools(t *testing.T) {
+	r := tooling.NewRegistry()
+	if err := r.Register(newMockTool("search_web", "search", "search")); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	defs, err := r.LoadSchemas([]string{"search_web", "drive_files"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 schema, got %d", len(defs))
+	}
+	if defs[0].Name != "search_web" {
+		t.Errorf("name: got %q", defs[0].Name)
+	}
+}
+
+func TestLoadSchemasErrorsWhenNoneRegistered(t *testing.T) {
+	r := tooling.NewRegistry()
+
+	if _, err := r.LoadSchemas([]string{"drive_files"}); err == nil {
+		t.Fatal("expected an error when no requested tool is registered")
+	}
+}

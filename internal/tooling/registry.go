@@ -2,6 +2,7 @@ package tooling
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/olegmatyakubov/go-assistant/internal/domain/entity"
@@ -65,14 +66,23 @@ func (r *Registry) LoadSchema(name string) (*entity.ToolDefinition, error) {
 	}, nil
 }
 
+// LoadSchemas returns schemas for the named tools, skipping any that are not
+// registered. Classifier rules are shared across instances while the tool set is
+// per-instance, so a missing tool is a normal configuration difference. Failing
+// the whole batch would leave the caller with no tools at all — which is how a
+// single unavailable name used to silently disarm the model.
 func (r *Registry) LoadSchemas(names []string) ([]entity.ToolDefinition, error) {
 	defs := make([]entity.ToolDefinition, 0, len(names))
 	for _, name := range names {
 		def, err := r.LoadSchema(name)
 		if err != nil {
-			return nil, err
+			slog.Debug("tool not registered on this instance, skipping", "tool", name)
+			continue
 		}
 		defs = append(defs, *def)
+	}
+	if len(defs) == 0 && len(names) > 0 {
+		return nil, fmt.Errorf("none of the requested tools are registered: %v", names)
 	}
 	return defs, nil
 }
