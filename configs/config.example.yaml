@@ -65,6 +65,23 @@ code:
 obsidian:
   vault_dir: ""   # absolute path to the synced vault, e.g. /root/Obsidian/Oleg
 
+# Google Workspace — set credentials_file to enable the Drive/Sheets/Gmail tools.
+# Leave empty to disable. Requires a service account added as a member of the
+# shared drive; Gmail additionally requires domain-wide delegation, and then
+# impersonate must name the mailbox to act as.
+google:
+  credentials_file: ""            # path to the service account JSON key
+  impersonate: ""                 # mailbox to act as; required only for Gmail
+  drive:
+    root_folder_id: ""            # shared drive id
+  sheets:
+    registry_id: ""               # project registry spreadsheet id
+    registry_sheet: "Проекты"
+  gmail:
+    enabled: false
+    processed_label: "Обработано"
+    poll_interval: 15m
+
 memory:
   fact_extraction_interval: 6          # extract facts every N messages
   extraction_model: "deepseek/deepseek-v4-flash"

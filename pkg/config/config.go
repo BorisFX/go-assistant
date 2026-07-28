@@ -25,6 +25,7 @@ type Config struct {
 	LegalReview  LegalReview  `yaml:"legal_review"`
 	Obsidian     Obsidian     `yaml:"obsidian"`
 	TravelSearch TravelSearch `yaml:"travel_search"`
+	Google       Google       `yaml:"google"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
 	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
 	Timezone string `yaml:"timezone"`
@@ -35,6 +36,35 @@ type MailRu struct {
 	Password string `yaml:"password"`
 	BasePath string `yaml:"base_path"`
 }
+
+// Google configures access to Google Workspace through a service account.
+// Off by default (empty CredentialsFile), so existing configs need no migration.
+type Google struct {
+	CredentialsFile string       `yaml:"credentials_file"`
+	Impersonate     string       `yaml:"impersonate"`
+	Drive           GoogleDrive  `yaml:"drive"`
+	Sheets          GoogleSheets `yaml:"sheets"`
+	Gmail           GoogleGmail  `yaml:"gmail"`
+}
+
+type GoogleDrive struct {
+	RootFolderID string `yaml:"root_folder_id"`
+}
+
+type GoogleSheets struct {
+	RegistryID    string `yaml:"registry_id"`
+	RegistrySheet string `yaml:"registry_sheet"`
+}
+
+type GoogleGmail struct {
+	Enabled        bool          `yaml:"enabled"`
+	IngestQuery    string        `yaml:"ingest_query"`
+	ProcessedLabel string        `yaml:"processed_label"`
+	PollInterval   time.Duration `yaml:"poll_interval"`
+}
+
+// Enabled reports whether any Google integration should be wired up.
+func (g Google) Enabled() bool { return g.CredentialsFile != "" }
 
 // LegalReview configures the legal-document-review pipeline. Off by default
 // (zero value Enabled=false), so existing configs need no migration.
@@ -194,6 +224,17 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: legal_review.reduce_model is required when legal_review.enabled is true")
 		}
 	}
+	if c.Google.Enabled() {
+		if c.Google.Drive.RootFolderID == "" {
+			return fmt.Errorf("config: google.drive.root_folder_id is required when google.credentials_file is set")
+		}
+		if c.Google.Sheets.RegistryID == "" {
+			return fmt.Errorf("config: google.sheets.registry_id is required when google.credentials_file is set")
+		}
+		if c.Google.Gmail.Enabled && c.Google.Impersonate == "" {
+			return fmt.Errorf("config: google.impersonate is required when google.gmail.enabled is true")
+		}
+	}
 	return nil
 }
 
@@ -290,6 +331,25 @@ func (c *Config) setDefaults() {
 		}
 		if c.LegalReview.CoordinatorMaxInputTokens == 0 {
 			c.LegalReview.CoordinatorMaxInputTokens = 80000
+		}
+	}
+
+	// Google defaults apply only when the integration is enabled.
+	if c.Google.Enabled() {
+		if c.Google.Sheets.RegistrySheet == "" {
+			c.Google.Sheets.RegistrySheet = "Проекты"
+		}
+		if c.Google.Gmail.Enabled {
+			if c.Google.Gmail.ProcessedLabel == "" {
+				c.Google.Gmail.ProcessedLabel = "Обработано"
+			}
+			// Built after ProcessedLabel so the query excludes the label in use.
+			if c.Google.Gmail.IngestQuery == "" {
+				c.Google.Gmail.IngestQuery = "in:inbox -label:" + c.Google.Gmail.ProcessedLabel
+			}
+			if c.Google.Gmail.PollInterval == 0 {
+				c.Google.Gmail.PollInterval = 15 * time.Minute
+			}
 		}
 	}
 
