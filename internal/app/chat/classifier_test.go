@@ -73,3 +73,28 @@ func TestClassifierRoutesDriveQueries(t *testing.T) {
 		}
 	}
 }
+
+// A request about a project must offer the projects tool. Without it the model
+// cannot learn the route or the stage and is left to invent them.
+func TestClassifierOffersProjectsTool(t *testing.T) {
+	c := chat.NewRuleClassifier()
+
+	for _, input := range []string{
+		"составь КП по проекту Vertex, 6 объектов",
+		"на каком этапе проект Мира_7",
+		"заведи проект в реестр",
+		"какие маршруты есть",
+	} {
+		_, tools, _ := c.Classify(input)
+
+		found := false
+		for _, got := range tools {
+			if got == "projects" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("input %q: expected projects in %v", input, tools)
+		}
+	}
+}
