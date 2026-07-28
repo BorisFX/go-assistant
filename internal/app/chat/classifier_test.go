@@ -51,3 +51,25 @@ func TestClassifier(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifierRoutesDriveQueries(t *testing.T) {
+	c := chat.NewRuleClassifier()
+
+	for _, input := range []string{
+		"покажи файлы на гугл диске",
+		"что лежит в драйве по проекту Ленина 42",
+		"найди выписку ЕГРН объекта",
+	} {
+		_, tools, _ := c.Classify(input)
+
+		found := false
+		for _, got := range tools {
+			if got == "drive_files" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("input %q: expected drive_files in %v", input, tools)
+		}
+	}
+}

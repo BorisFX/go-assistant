@@ -16,6 +16,9 @@ import (
 
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
+	// Aliased: the package name would otherwise clash with the Google SDK's own
+	// google packages pulled in alongside drive/v3.
+	gworkspace "github.com/olegmatyakubov/go-assistant/internal/adapter/driven/google"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/openrouter"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/postgres"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/search"
@@ -34,6 +37,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/tooling"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
+	"google.golang.org/api/drive/v3"
 )
 
 //go:embed all:dashboard_dist
@@ -163,6 +167,29 @@ func main() {
 	if cfg.MailRu.Email != "" {
 		mailRuCloud = builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath, filesDir)
 		registry.Register(mailRuCloud)
+	}
+	if cfg.Google.Enabled() {
+		// Fail loudly: a configured but broken Google setup is a deployment
+		// error, not something to discover later inside a tool call.
+		creds, err := gworkspace.LoadCredentials(cfg.Google.CredentialsFile, cfg.Google.Impersonate)
+		if err != nil {
+			slog.Error("failed to load google credentials", "error", err)
+			os.Exit(1)
+		}
+		driveOpts, err := creds.ClientOptions(context.Background(), "", drive.DriveScope)
+		if err != nil {
+			slog.Error("failed to build google drive auth", "error", err)
+			os.Exit(1)
+		}
+		driveClient, err := gworkspace.NewDrive(context.Background(), cfg.Google.Drive.RootFolderID, driveOpts...)
+		if err != nil {
+			slog.Error("failed to create google drive client", "error", err)
+			os.Exit(1)
+		}
+		registry.Register(builtin.NewDriveFiles(driveClient, filesDir))
+		slog.Info("google drive tool enabled",
+			"service_account", creds.Email(),
+			"root_folder_id", cfg.Google.Drive.RootFolderID)
 	}
 
 	// Memory system
