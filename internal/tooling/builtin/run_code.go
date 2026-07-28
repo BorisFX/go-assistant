@@ -22,9 +22,11 @@ func NewRunCode(executor CodeExecutor, defaultWorkDir string) *RunCode {
 	}
 }
 
-func (r *RunCode) Name() string        { return "run_code" }
-func (r *RunCode) Description() string { return "Run Claude Code to write, fix, or refactor code in a project" }
-func (r *RunCode) Category() string    { return "coding" }
+func (r *RunCode) Name() string { return "run_code" }
+func (r *RunCode) Description() string {
+	return "Run Claude Code to write, fix, or refactor code in a project"
+}
+func (r *RunCode) Category() string { return "coding" }
 
 func (r *RunCode) Schema() json.RawMessage {
 	return json.RawMessage(`{

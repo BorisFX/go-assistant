@@ -17,6 +17,7 @@ type fakeDrive struct {
 	content    []byte
 	resolved   string
 	resolveErr error
+	ensured    bool
 
 	lastParent   string
 	lastPath     string
@@ -280,5 +281,41 @@ func TestDriveFilesMoveRequiresFileID(t *testing.T) {
 
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"action":"move","path":"Vertex"}`)); err == nil {
 		t.Fatal("expected an error when file_id is missing")
+	}
+}
+
+func (f *fakeDrive) EnsurePath(ctx context.Context, path string) (string, error) {
+	f.lastPath = path
+	f.ensured = true
+	return f.resolved, f.resolveErr
+}
+
+// Writing actions must tolerate a stage folder that does not exist yet, because
+// the tool loop runs a batch in parallel and mkdir may not have landed.
+func TestDriveFilesMoveEnsuresDestination(t *testing.T) {
+	fake := &fakeDrive{resolved: "stage"}
+	tool := builtin.NewDriveFiles(fake, t.TempDir())
+
+	if _, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"action":"move","file_id":"f1","path":"Vertex/05_Адреса"}`)); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !fake.ensured {
+		t.Error("move must ensure the destination path, not merely resolve it")
+	}
+}
+
+// Reading must stay strict: listing a folder that is not there is a real error,
+// and silently creating it would hide typos.
+func TestDriveFilesListDoesNotCreateFolders(t *testing.T) {
+	fake := &fakeDrive{resolved: "x"}
+	tool := builtin.NewDriveFiles(fake, t.TempDir())
+
+	if _, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"action":"list","path":"Vertex/НетТакой"}`)); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if fake.ensured {
+		t.Error("list must not create folders")
 	}
 }

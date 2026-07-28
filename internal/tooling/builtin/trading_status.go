@@ -20,9 +20,11 @@ func NewTradingStatus(client TradingClient) *TradingStatus {
 	return &TradingStatus{client: client}
 }
 
-func (t *TradingStatus) Name() string        { return "trading_status" }
-func (t *TradingStatus) Description() string { return "Get current trading bot status: balance, positions, P&L" }
-func (t *TradingStatus) Category() string    { return "trading" }
+func (t *TradingStatus) Name() string { return "trading_status" }
+func (t *TradingStatus) Description() string {
+	return "Get current trading bot status: balance, positions, P&L"
+}
+func (t *TradingStatus) Category() string { return "trading" }
 
 func (t *TradingStatus) Schema() json.RawMessage {
 	return json.RawMessage(`{

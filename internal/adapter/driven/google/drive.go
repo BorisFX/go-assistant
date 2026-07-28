@@ -172,7 +172,12 @@ func (d *Drive) EnsureFolder(ctx context.Context, parentID, name string) (FileIn
 	if len(found) > 0 {
 		return found[0], nil
 	}
+	return d.createFolder(ctx, parentID, name)
+}
 
+// createFolder skips the existence check. Callers that have already looked the
+// folder up use this to avoid paying for the same query twice.
+func (d *Drive) createFolder(ctx context.Context, parentID, name string) (FileInfo, error) {
 	meta := &drive.File{Name: name, MimeType: folderMime, Parents: []string{parentID}}
 	f, err := d.svc.Files.Create(meta).
 		Fields("id,name,mimeType,modifiedTime").
@@ -182,6 +187,45 @@ func (d *Drive) EnsureFolder(ctx context.Context, parentID, name string) (FileIn
 		return FileInfo{}, fmt.Errorf("drive create folder %s: %w", name, err)
 	}
 	return toFileInfo(f), nil
+}
+
+// EnsurePath resolves a path, creating folders that do not exist yet — except
+// the first segment, which must already be there. The tool loop executes a
+// batch of tool calls in parallel, so a model's "create the folder, then move
+// files into it" cannot rely on ordering; ensuring the path on write makes the
+// order irrelevant. Refusing to create the first segment keeps a typo in the
+// project name a loud error instead of a silently started second project.
+func (d *Drive) EnsurePath(ctx context.Context, path string) (string, error) {
+	current := d.root
+	for i, part := range splitPath(path) {
+		found, err := d.list(ctx, d.folderQuery(current, part))
+		if err != nil {
+			return "", err
+		}
+		if len(found) > 0 {
+			current = found[0].ID
+			continue
+		}
+		if i == 0 {
+			return "", fmt.Errorf("drive: project folder %q not found — create it first or check the name", part)
+		}
+		created, err := d.createFolder(ctx, current, part)
+		if err != nil {
+			return "", err
+		}
+		current = created.ID
+	}
+	return current, nil
+}
+
+func splitPath(path string) []string {
+	var parts []string
+	for _, p := range strings.Split(strings.Trim(path, "/"), "/") {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
 }
 
 // Move reparents a file. Drive has no move operation: a file's location is its

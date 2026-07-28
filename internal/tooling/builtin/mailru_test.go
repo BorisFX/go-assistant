@@ -48,8 +48,8 @@ func TestPathLeaf(t *testing.T) {
 	cases := map[string]string{
 		"/РУСКОН Раменское/на РВ/file.pdf": "file.pdf",
 		"/РУСКОН Раменское/на РВ/":         "на РВ",
-		"/top/":                            "top",
-		"file.pdf":                         "file.pdf",
+		"/top/":    "top",
+		"file.pdf": "file.pdf",
 	}
 	for in, want := range cases {
 		if got := pathLeaf(in); got != want {

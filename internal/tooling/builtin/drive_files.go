@@ -21,6 +21,7 @@ type DriveClient interface {
 	EnsureFolder(ctx context.Context, parentID, name string) (gworkspace.FileInfo, error)
 	Move(ctx context.Context, fileID, newParentID string) (gworkspace.FileInfo, error)
 	ResolvePath(ctx context.Context, path string) (string, error)
+	EnsurePath(ctx context.Context, path string) (string, error)
 }
 
 // DriveFiles exposes the project shared drive to the model. The action-dispatch
@@ -180,7 +181,7 @@ func (d *DriveFiles) upload(ctx context.Context, path, name, content string) (js
 	if name == "" {
 		return nil, fmt.Errorf("upload: name is required")
 	}
-	folderID, err := d.client.ResolvePath(ctx, path)
+	folderID, err := d.client.EnsurePath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +196,7 @@ func (d *DriveFiles) mkdir(ctx context.Context, path, name string) (json.RawMess
 	if name == "" {
 		return nil, fmt.Errorf("mkdir: name is required")
 	}
-	parentID, err := d.client.ResolvePath(ctx, path)
+	parentID, err := d.client.EnsurePath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +213,7 @@ func (d *DriveFiles) move(ctx context.Context, fileID, path string) (json.RawMes
 	if fileID == "" {
 		return nil, fmt.Errorf("move: file_id is required")
 	}
-	target, err := d.client.ResolvePath(ctx, path)
+	target, err := d.client.EnsurePath(ctx, path)
 	if err != nil {
 		return nil, err
 	}

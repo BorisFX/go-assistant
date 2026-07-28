@@ -258,3 +258,64 @@ func TestDriveMoveRequiresIDs(t *testing.T) {
 		t.Error("expected an error for an empty target folder")
 	}
 }
+
+// EnsurePath removes the ordering dependency between mkdir and move: the tool
+// loop runs a batch of calls in parallel, so "create then fill" cannot be
+// relied on. The first segment is deliberately NOT created — a typo in the
+// project name must fail loudly instead of silently starting a new project.
+func TestEnsurePathCreatesMissingStageFolder(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"files":[{"id":"proj","name":"Vertex","mimeType":"application/vnd.google-apps.folder"}]}`,
+		`{"files":[]}`,
+		`{"id":"stage","name":"05_Адреса","mimeType":"application/vnd.google-apps.folder"}`,
+	)
+
+	id, err := newTestDrive(t, stub).EnsurePath(context.Background(), "Vertex/05_Адреса")
+	if err != nil {
+		t.Fatalf("ensure path: %v", err)
+	}
+	if id != "stage" {
+		t.Errorf("id: got %q, want stage", id)
+	}
+}
+
+func TestEnsurePathRejectsUnknownProject(t *testing.T) {
+	stub := newDriveStub(t, `{"files":[]}`)
+
+	if _, err := newTestDrive(t, stub).EnsurePath(context.Background(), "Опечатка/05_Адреса"); err == nil {
+		t.Fatal("a missing first segment must fail, not be created")
+	}
+	if len(stub.queries) != 1 {
+		t.Errorf("must stop after the failed lookup, got %d requests", len(stub.queries))
+	}
+}
+
+func TestEnsurePathEmptyIsRoot(t *testing.T) {
+	stub := newDriveStub(t)
+
+	id, err := newTestDrive(t, stub).EnsurePath(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ensure path: %v", err)
+	}
+	if id != "0ADRIVE" {
+		t.Errorf("got %q, want the drive root", id)
+	}
+}
+
+func TestEnsurePathExistingChainCreatesNothing(t *testing.T) {
+	stub := newDriveStub(t,
+		`{"files":[{"id":"proj","name":"Vertex","mimeType":"application/vnd.google-apps.folder"}]}`,
+		`{"files":[{"id":"stage","name":"08_Аренда","mimeType":"application/vnd.google-apps.folder"}]}`,
+	)
+
+	id, err := newTestDrive(t, stub).EnsurePath(context.Background(), "Vertex/08_Аренда")
+	if err != nil {
+		t.Fatalf("ensure path: %v", err)
+	}
+	if id != "stage" {
+		t.Errorf("id: got %q", id)
+	}
+	if len(stub.queries) != 2 {
+		t.Errorf("expected two lookups and no creation, got %d requests", len(stub.queries))
+	}
+}
