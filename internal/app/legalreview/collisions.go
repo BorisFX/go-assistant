@@ -9,9 +9,11 @@ import (
 	"strings"
 )
 
-// numericTolerance is the relative difference below which two areas or volumes
-// are the same number written with different rounding (0.5%).
-const numericTolerance = 0.005
+// numericTolerance is the absolute difference below which two areas or volumes
+// are the same number written with different rounding. Cadastral records keep
+// 0.1 m²; a 24 m² gap between a tech plan and a permit is a suspension ground,
+// so no relative slack is allowed.
+const numericTolerance = 0.051
 
 // tepField describes one comparable numeric parameter.
 type tepField struct {
@@ -91,14 +93,7 @@ func numbersDiffer(have []Digest, f tepField) bool {
 			}
 			continue
 		}
-		scale := math.Max(math.Abs(base), math.Abs(v))
-		if scale == 0 {
-			if v != base {
-				return true
-			}
-			continue
-		}
-		if math.Abs(v-base)/scale > numericTolerance {
+		if math.Abs(v-base) > numericTolerance {
 			return true
 		}
 	}

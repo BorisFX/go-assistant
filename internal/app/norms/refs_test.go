@@ -2,6 +2,7 @@ package norms
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,19 @@ func TestExtractRefs_LawSpelledOut(t *testing.T) {
 	got := ExtractRefs("в силу ч. 7 ст. 51 Градостроительного кодекса РФ")
 	if len(got) != 1 || got[0].DocCode != "ГрК РФ" || got[0].Ref != "ст. 51 ч. 7" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestExtractRefsLawWithDate(t *testing.T) {
+	text := "На основании пункта 7 части 1 статьи 26 Федерального закона от 13.07.2015 № 218-ФЗ учет приостанавливается; см. также часть 7 статьи 51 Градостроительного кодекса и ст. 24 Федерального закона N 218-ФЗ."
+	got := map[string]bool{}
+	for _, r := range ExtractRefs(text) {
+		got[NormalizeDocCode(r.DocCode)+"|"+r.Ref] = true
+	}
+	for _, want := range []string{"218-ФЗ|ст. 26 ч. 1 п. 7", "ГрК РФ|ст. 51 ч. 7", "218-ФЗ|ст. 24"} {
+		k := NormalizeDocCode(strings.Split(want, "|")[0]) + "|" + NormalizeRef(strings.Split(want, "|")[1])
+		if !got[k] {
+			t.Errorf("missing %q; got %v", want, got)
+		}
 	}
 }

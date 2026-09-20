@@ -81,13 +81,15 @@ func RenderHTML(title, content string) string {
 	b.WriteString("</style></head><body>")
 
 	inList, inTable := false, false
+	var tableRows [][]string
 	closeBlocks := func() {
 		if inList {
 			b.WriteString("</ul>")
 			inList = false
 		}
 		if inTable {
-			b.WriteString("</table>")
+			writeTable(&b, tableRows)
+			tableRows = nil
 			inTable = false
 		}
 	}
@@ -109,14 +111,9 @@ func RenderHTML(title, content string) string {
 			}
 			if !inTable {
 				closeBlocks()
-				b.WriteString("<table>")
 				inTable = true
 			}
-			b.WriteString("<tr>")
-			for _, c := range cells {
-				fmt.Fprintf(&b, "<td>%s</td>", inline(c))
-			}
-			b.WriteString("</tr>")
+			tableRows = append(tableRows, cells)
 		case mdHeading.MatchString(trimmed):
 			closeBlocks()
 			m := mdHeading.FindStringSubmatch(trimmed)
@@ -176,4 +173,56 @@ func isRule(line string) bool {
 		}
 	}
 	return false
+}
+
+// writeTable emits a buffered table with explicit column widths. LibreOffice
+// ignores CSS widths on HTML import and squeezes every column to one
+// character, so widths go as attributes, proportional to the longest cell.
+func writeTable(b *strings.Builder, rows [][]string) {
+	if len(rows) == 0 {
+		return
+	}
+	cols := 0
+	for _, r := range rows {
+		if len(r) > cols {
+			cols = len(r)
+		}
+	}
+	widths := make([]int, cols)
+	total := 0
+	for i := 0; i < cols; i++ {
+		longest := 0
+		for _, r := range rows {
+			if i < len(r) && len([]rune(r[i])) > longest {
+				longest = len([]rune(r[i]))
+			}
+		}
+		// Floor keeps a "№" column readable, cap stops one long cell from
+		// starving the rest.
+		if longest < 4 {
+			longest = 4
+		}
+		if longest > 40 {
+			longest = 40
+		}
+		widths[i] = longest
+		total += longest
+	}
+	b.WriteString(`<table border="1" cellspacing="0" cellpadding="4" width="100%">`)
+	for ri, r := range rows {
+		b.WriteString("<tr>")
+		for i := 0; i < cols; i++ {
+			cell := ""
+			if i < len(r) {
+				cell = inline(r[i])
+			}
+			tag := "td"
+			if ri == 0 {
+				tag = "th"
+			}
+			fmt.Fprintf(b, `<%s width="%d%%">%s</%s>`, tag, widths[i]*100/total, cell, tag)
+		}
+		b.WriteString("</tr>")
+	}
+	b.WriteString("</table>")
 }

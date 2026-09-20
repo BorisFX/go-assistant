@@ -27,8 +27,8 @@ func TestRenderHTMLKeepsStructure(t *testing.T) {
 		"<h1>Техническое задание</h1>",
 		"<h2>1. Объект</h2>",
 		"<li>геодезия</li>",
-		"<table>",
-		"<td>Геодезия</td>",
+		"<table border=\"1\"",
+		">Геодезия</td>",
 		"<b>важным</b>",
 	} {
 		if !strings.Contains(out, want) {

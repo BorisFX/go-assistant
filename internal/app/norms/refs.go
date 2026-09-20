@@ -59,7 +59,7 @@ var (
 	unitPart = `(?:(?:ч\.?|част` + letter + `+)\s*(\d+))?`
 	unitPnt  = `(?:(?:п\.?|пункт` + letter + `*)\s*(\d+(?:\.\d+)*))?`
 	unitArt  = `(?:ст\.?|стать` + letter + `+)\s*(\d+(?:\.\d+)?)`
-	lawTail  = `\s*(?:Федерального\s+закона\s*)?(?:№\s*)?`
+	lawTail  = `\s*(?:Федерального\s+закона\s*)?(?:от\s+\d{1,2}\.\d{2}\.\d{4}\s*(?:г\.?\s*)?)?(?:[№N]\s*)?`
 
 	// guard + ст. 26 [ч. 1] [п. 7] 218-ФЗ  → groups: 1 guard, 2 art, 3 part, 4 pnt, 5 code
 	reLawArtFirst = regexp.MustCompile(`(?i)` + guard + unitArt + `\s*` + unitPart + `\s*` + unitPnt + lawTail + lawCodes)

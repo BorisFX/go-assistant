@@ -23,7 +23,7 @@ func TestCollide_NeedsTwoDocumentsWithFacts(t *testing.T) {
 func TestCollide_EqualValuesWithinTolerance(t *testing.T) {
 	digests := []Digest{
 		{Path: "/d/техплан.xml", Facts: Facts{DocType: "техплан", CadastralNumbers: []string{"50:16:0000000:1"}, TEP: TEP{AreaTotalM2: fp(3317.6), Floors: fp(1)}}},
-		{Path: "/d/РнС.pdf", Facts: Facts{DocType: "разрешение на строительство", CadastralNumbers: []string{"50:16:0000000:1"}, TEP: TEP{AreaTotalM2: fp(3317.5), Floors: fp(1)}}},
+		{Path: "/d/РнС.pdf", Facts: Facts{DocType: "разрешение на строительство", CadastralNumbers: []string{"50:16:0000000:1"}, TEP: TEP{AreaTotalM2: fp(3317.55), Floors: fp(1)}}},
 	}
 	out := Collide(digests)
 	if !strings.HasPrefix(out, "АВТОСВЕРКА") {
@@ -32,9 +32,9 @@ func TestCollide_EqualValuesWithinTolerance(t *testing.T) {
 	// The legend in the header names the glyph; only the body counts.
 	body := out[strings.Index(out, "\n\n"):]
 	if strings.Contains(body, "🔴") {
-		t.Fatalf("0.1 m² on 3317 m² is rounding, not a collision:\n%s", out)
+		t.Fatalf("0.05 m² is rounding, not a collision:\n%s", out)
 	}
-	for _, want := range []string{"✅ Общая площадь", "✅ Этажность", "✅ Кадастровые номера", "техплан.xml [техплан]", "РнС.pdf [разрешение на строительство]", "3317.6", "3317.5"} {
+	for _, want := range []string{"✅ Общая площадь", "✅ Этажность", "✅ Кадастровые номера", "техплан.xml [техплан]", "РнС.pdf [разрешение на строительство]", "3317.6", "3317.55"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
@@ -66,5 +66,18 @@ func TestCollide_ExactFieldsAreStrict(t *testing.T) {
 	}
 	if out := Collide(digests); !strings.Contains(out, "🔴 Количество этажей") {
 		t.Fatalf("floor counts 2 vs 3 must be flagged:\n%s", out)
+	}
+}
+
+func TestCollide_TenthOfSquareMetreIsACollision(t *testing.T) {
+	// Cadastral records keep 0.1 m²: 3317.6 vs 3317.5 is what a registrar
+	// flags, so the auto-check must not hide it behind a relative tolerance.
+	digests := []Digest{
+		{Path: "/d/техплан.xml", Facts: Facts{DocType: "техплан", TEP: TEP{AreaTotalM2: fp(3317.6)}}},
+		{Path: "/d/РнС.pdf", Facts: Facts{DocType: "разрешение на строительство", TEP: TEP{AreaTotalM2: fp(3317.5)}}},
+	}
+	out := Collide(digests)
+	if !strings.Contains(out, "🔴 Общая площадь") {
+		t.Fatalf("expected a collision on 0.1 m²:\n%s", out)
 	}
 }
