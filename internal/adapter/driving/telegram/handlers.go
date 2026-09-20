@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/olegmatyakubov/go-assistant/internal/app/docgen"
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/domain/valueobject"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
@@ -516,14 +517,16 @@ func (b *Bot) collectFolder(ctx context.Context, folder string) ([]string, error
 	return nil, errors.Join(errs...)
 }
 
-// handleLegalReview runs the "разбери папку X" intent: collect a Mail.ru folder,
-// orchestrate per-document digests, then a premium coordinator review. Long-form
-// reports are delivered as a Markdown file; short ones as chunked text.
+// handleLegalReview runs the "разбери папку X" intent: collect the folder from
+// Drive or Mail.ru, orchestrate per-document digests, then a premium
+// coordinator review. The result is delivered as a client-grade PDF (with a
+// short text preview), stored next to the documents and recorded as a run.
 func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	chatID := msg.Chat.ID
+	started := time.Now()
 	slog.Info("legalreview request", "folder", folder, "chat_id", chatID)
 	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
 
@@ -545,21 +548,89 @@ func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 		return
 	}
 
-	if len(report) > 3500 {
-		os.MkdirAll(b.filesDir, 0755)
-		fileName := fmt.Sprintf("Юр-ревью-%s-%d.md", sanitizeFolderName(folder), time.Now().Unix())
-		filePath := filepath.Join(b.filesDir, fileName)
-		if err := os.WriteFile(filePath, []byte(report), 0644); err != nil {
-			slog.Error("failed to write legal review report", "error", err, "path", filePath)
-			// Fall back to chunked text so the work isn't lost.
-			NewDraftStream(b.api, chatID, b.streamMode).SendChunked(report)
-			return
+	run := legalreview.Run{
+		Folder:        folder,
+		Files:         legalreview.DescribeFiles(paths),
+		Report:        report,
+		NormativyHash: b.legalReview.normativyHash,
+		StartedAt:     started,
+		FinishedAt:    time.Now(),
+	}
+	run.Models = b.legalReview.models
+
+	// Findings first, as text: Yuri reads them on the phone before the PDF.
+	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(reportPreview(report))
+
+	b.deliverReport(ctx, chatID, &run)
+	slog.Info("legalreview delivered",
+		"folder", folder, "files", len(paths), "report_chars", len(report),
+		"pdf", run.PDFPath != "", "elapsed_ms", time.Since(started).Milliseconds())
+}
+
+// reportPreviewChars bounds the text preview; the full report is in the PDF.
+const reportPreviewChars = 3000
+
+func reportPreview(report string) string {
+	r := []rune(report)
+	if len(r) <= reportPreviewChars {
+		return report
+	}
+	return string(r[:reportPreviewChars]) + "\n\n…(полный текст — в заключении PDF)"
+}
+
+// deliverReport renders the PDF, sends it, uploads it to Drive and records the
+// run. When the PDF cannot be built, the markdown report goes out as a file so
+// the work is never lost.
+func (b *Bot) deliverReport(ctx context.Context, chatID int64, run *legalreview.Run) {
+	os.MkdirAll(b.filesDir, 0o755)
+	markdown := legalreview.BuildReportMarkdown(*run)
+	elapsed := run.FinishedAt.Sub(run.StartedAt).Round(time.Second)
+
+	pdf, err := docgen.MarkdownToPDF(ctx, "Заключение", markdown)
+	if err != nil {
+		slog.Error("legalreview pdf failed", "error", err)
+		mdPath := filepath.Join(b.filesDir, strings.TrimSuffix(legalreview.ReportFileName(*run), ".pdf")+".md")
+		if werr := os.WriteFile(mdPath, []byte(markdown), 0o644); werr != nil {
+			slog.Error("failed to write legal review report", "error", werr, "path", mdPath)
+			b.sendText(chatID, "PDF не собрался: "+err.Error())
+		} else {
+			b.sendFile(chatID, mdPath, fmt.Sprintf("Заключение по папке «%s» (PDF не собрался, отдаю текст). Время: %s", run.Folder, elapsed))
 		}
-		b.sendFile(chatID, filePath, fmt.Sprintf("Юр-ревью папки «%s»", folder))
+		b.storeRun(ctx, run)
 		return
 	}
 
-	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(report)
+	pdfPath := filepath.Join(b.filesDir, legalreview.ReportFileName(*run))
+	if err := os.WriteFile(pdfPath, pdf, 0o644); err != nil {
+		slog.Error("failed to write legal review pdf", "error", err, "path", pdfPath)
+		b.sendText(chatID, "Не удалось сохранить PDF: "+err.Error())
+		b.storeRun(ctx, run)
+		return
+	}
+	run.PDFPath = pdfPath
+
+	caption := fmt.Sprintf("Заключение по папке «%s». Документов: %d. Время: %s", run.Folder, len(run.Files), elapsed)
+	if b.legalReview.sink != nil {
+		drivePath, err := b.legalReview.sink.UploadReport(ctx, run.Folder, filepath.Base(pdfPath), pdf)
+		if err != nil {
+			slog.Warn("legalreview: report not uploaded to drive", "error", err)
+		} else {
+			caption += "\nНа Диске: " + drivePath
+		}
+	}
+	b.sendFile(chatID, pdfPath, caption)
+	b.storeRun(ctx, run)
+}
+
+// storeRun records the run when a store is configured. A failed save is
+// logged, not surfaced: the client already has the report.
+func (b *Bot) storeRun(ctx context.Context, run *legalreview.Run) {
+	if b.legalReview.store == nil {
+		return
+	}
+	if _, err := b.legalReview.store.Save(ctx, run); err != nil {
+		slog.Error("legalreview: run not saved", "error", err, "folder", run.Folder)
+	}
 }
 
 // sendText sends a plain text message, ignoring Markdown parsing errors.
@@ -567,12 +638,6 @@ func (b *Bot) sendText(chatID int64, text string) {
 	if _, err := b.api.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
 		slog.Warn("failed to send text", "error", err)
 	}
-}
-
-// sanitizeFolderName makes a folder name safe for use in a file name.
-func sanitizeFolderName(folder string) string {
-	repl := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
-	return strings.Trim(repl.Replace(folder), "_")
 }
 
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {

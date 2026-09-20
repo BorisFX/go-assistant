@@ -16,3 +16,4 @@ vendor/
 dashboard/node_modules/
 dashboard/dist/
 assistant
+.claude/worktrees/

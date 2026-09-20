@@ -69,6 +69,10 @@ DOCUMENT CHECKS (mandatory, override any other workflow):
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
 	migrateOnly := flag.Bool("migrate", false, "run database migrations and exit")
+	// Headless review: the eval/ops entry point. Runs the same pipeline the
+	// Telegram intent does, over a local directory, and exits.
+	reviewDir := flag.String("review-dir", "", "run the legal review over a local directory and exit (requires legal_review.enabled)")
+	reviewOut := flag.String("review-out", "", "where to write the markdown report for --review-dir (default: <dir>/Заключение.md)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -466,9 +470,28 @@ func main() {
 		// cross-check of ТЭП/cadastral numbers is built from them in Go.
 		facts := legalreview.NewFactsExtractor(runner, cfg.LegalReview.DigestModel)
 		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency).WithFacts(facts)
+		if *reviewDir != "" {
+			os.Exit(runHeadlessReview(orch, cfg, string(normativy), *reviewDir, *reviewOut))
+		}
 		bot.EnableLegalReview(orch, cfg.LegalReview.MaxFiles, collectors...)
+		// Drive keeps the finished report next to the documents; Postgres keeps
+		// the run itself as the audit trail behind the conclusion.
+		var sink telegram.ReportSink
+		if driveFiles != nil {
+			sink = driveFiles
+		}
+		bot.SetReviewOptions(telegram.ReviewOptions{
+			Sink:             sink,
+			Store:            postgres.NewReviewRepo(db),
+			DigestModel:      cfg.LegalReview.DigestModel,
+			CoordinatorModel: cfg.LegalReview.CoordinatorModel,
+			NormativyHash:    legalreview.HashText(string(normativy)),
+		})
 		slog.Info("legal-review pipeline enabled",
 			"max_files", cfg.LegalReview.MaxFiles, "storages", len(collectors))
+	} else if *reviewDir != "" {
+		slog.Error("--review-dir requires legal_review.enabled in the config")
+		os.Exit(2)
 	}
 
 	// Dashboard FS

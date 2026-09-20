@@ -1,70 +1,72 @@
-package builtin
+package builtin_test
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	gworkspace "github.com/olegmatyakubov/go-assistant/internal/adapter/driven/google"
+	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 )
 
-// The spec goes to a stranger, so structure has to survive: headings, lists and
-// the table of works, not one flat blob of text.
-func TestRenderHTMLKeepsStructure(t *testing.T) {
-	out := renderHTML("ТЗ.pdf", `# Техническое задание
+// reportDrive records uploads and refuses to resolve paths it was not told about,
+// so the fallback into «Отчёты» is observable.
+type reportDrive struct {
+	fakeDrive
+	known    map[string]string
+	uploaded []string
+}
 
-## 1. Объект
-Пристройка 220 м², д. Пирогово.
-
-- геодезия
-- геология
-
-| Вид работ | Срок |
-|---|---|
-| Геодезия | 20 р.д. |
-
-Текст с **важным** фрагментом.`)
-
-	for _, want := range []string{
-		"<h1>Техническое задание</h1>",
-		"<h2>1. Объект</h2>",
-		"<li>геодезия</li>",
-		"<table>",
-		"<td>Геодезия</td>",
-		"<b>важным</b>",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("в HTML нет %q:\n%s", want, out)
-		}
+func (r *reportDrive) EnsurePath(_ context.Context, path string) (string, error) {
+	if id, ok := r.known[path]; ok {
+		return id, nil
 	}
-	// Разделитель markdown-таблицы не должен превратиться в строку документа.
-	if strings.Contains(out, "<td>---</td>") {
-		t.Error("разделитель таблицы попал в документ")
+	return "", errors.New("нет такой папки")
+}
+
+func (r *reportDrive) Upload(_ context.Context, parentID, name, mime string, _ []byte) (gworkspace.FileInfo, error) {
+	r.uploaded = append(r.uploaded, parentID+"/"+name+"/"+mime)
+	return gworkspace.FileInfo{ID: "f1", Name: name}, nil
+}
+
+func TestUploadReportGoesIntoReviewedFolder(t *testing.T) {
+	drive := &reportDrive{known: map[string]string{"Vertex/03_Техпланы": "folder-1"}}
+	d := builtin.NewDriveFiles(drive, t.TempDir())
+
+	path, err := d.UploadReport(context.Background(), "/Vertex/03_Техпланы/", "Заключение.pdf", []byte("%PDF"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "Vertex/03_Техпланы/Заключение.pdf" {
+		t.Errorf("путь отчёта: %q", path)
+	}
+	if len(drive.uploaded) != 1 || !strings.HasPrefix(drive.uploaded[0], "folder-1/Заключение.pdf/application/pdf") {
+		t.Errorf("загрузка: %v", drive.uploaded)
 	}
 }
 
-// Текст подрядчика — не разметка: угловые скобки не должны ломать документ.
-func TestRenderHTMLEscapesText(t *testing.T) {
-	out := renderHTML("x.pdf", "Смета <не менее> 100 000 ₽ & НДС")
+// A Mail.ru folder name resolves nowhere on Drive: the report still has to
+// land somewhere findable.
+func TestUploadReportFallsBackToReportsFolder(t *testing.T) {
+	drive := &reportDrive{known: map[string]string{"Отчёты": "reports-id"}}
+	d := builtin.NewDriveFiles(drive, t.TempDir())
 
-	if strings.Contains(out, "<не менее>") {
-		t.Errorf("текст не экранирован: %s", out)
+	path, err := d.UploadReport(context.Background(), "НОГИНСК ОБЪЕКТЫ/СОЛОЩУК", "Заключение.pdf", []byte("%PDF"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "&amp; НДС") {
-		t.Errorf("амперсанд не экранирован: %s", out)
+	if path != "Отчёты/Заключение.pdf" {
+		t.Errorf("путь отчёта: %q", path)
+	}
+	if len(drive.uploaded) != 1 || !strings.HasPrefix(drive.uploaded[0], "reports-id/") {
+		t.Errorf("загрузка: %v", drive.uploaded)
 	}
 }
 
-func TestRenderHTMLSetsCyrillicFont(t *testing.T) {
-	if !strings.Contains(renderHTML("x.pdf", "Проверка"), pdfFont) {
-		t.Error("шрифт с кириллицей не задан — подрядчик получит квадраты")
-	}
-}
-
-func TestRenderHTMLTurnsRuleIntoLine(t *testing.T) {
-	out := renderHTML("x.pdf", "Заголовок\n\n---\n\nТекст")
-
-	if !strings.Contains(out, "<hr>") {
-		t.Errorf("черта не отрисована: %s", out)
-	}
-	if strings.Contains(out, "<p>---</p>") {
-		t.Error("«---» попало в документ текстом")
+func TestUploadReportFailsWhenNoFolderAtAll(t *testing.T) {
+	d := builtin.NewDriveFiles(&reportDrive{known: map[string]string{}}, t.TempDir())
+	if _, err := d.UploadReport(context.Background(), "x", "r.pdf", []byte("%PDF")); err == nil {
+		t.Error("без папки отчёт некуда класть — ожидалась ошибка")
 	}
 }
