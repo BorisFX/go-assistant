@@ -57,7 +57,8 @@ const coordinatorSystemPrompt = `Ты — ведущий юрист-коорди
      «1. 🔴 Площадь здания: 11 915,4 (техплан) vs 11 939,6 (РнС)
         Документы: TextPart стр. 4–5; РнС стр. 5
         Вывод: расхождение требует устранения.»
-   Цель — чтобы текст читался как обычное сообщение, без сырой Markdown-разметки.`
+   Цель — чтобы текст читался как обычное сообщение, без сырой Markdown-разметки.
+8. ИСТОЧНИК НОРМ. Ссылайся на статью или пункт нормы ТОЛЬКО если его текст есть в разделе «ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ» во входе. Если нужного пункта там нет — пиши «текст нормы не загружен в базу, требует проверки» и НЕ цитируй и не пересказывай норму по памяти. Оглавление нормативной базы ниже — только карта, а не текст для цитирования.`
 
 const coordinatorMaxTokens = 8192
 
@@ -65,14 +66,27 @@ const coordinatorMaxTokens = 8192
 // если вызвали с непозитивным бюджетом. Стережёт от случайного 0.
 const defaultCoordinatorBudget = 80000
 
+// normRetriever supplies citable normative text for a batch: the corpus is
+// asked for the units the digests reference plus semantic neighbours.
+type normRetriever interface {
+	Excerpts(ctx context.Context, texts []string, limit int) (string, error)
+}
+
+// excerptsLimit is how many corpus chunks a review may pull in.
+const excerptsLimit = 12
+
+// excerptsHeader opens the only section the coordinator may cite norms from.
+const excerptsHeader = "## ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ (единственный допустимый источник цитат)\n"
+
 // Coordinator сводит выжимки пачки в один отчёт. Единственный вызов премиум-
 // модели; нормативная база инлайнится в системный промпт (стабильный кэш-префикс).
 type Coordinator struct {
 	runner         subagentRunner
-	model          string // премиум-модель координатора (Sonnet)
-	reduceModel    string // дешёвая модель для reduce-прохода при переполнении
-	normativy      string // нормативная база, инлайнится в системный промпт
-	maxInputTokens int    // бюджет входа ≈40% окна
+	norms          normRetriever // optional: nil when no corpus is configured
+	model          string        // премиум-модель координатора (Sonnet)
+	reduceModel    string        // дешёвая модель для reduce-прохода при переполнении
+	normativy      string        // нормативная база, инлайнится в системный промпт
+	maxInputTokens int           // бюджет входа ≈40% окна
 }
 
 func NewCoordinator(runner subagentRunner, model, reduceModel, normativy string, maxInputTokens int) *Coordinator {
@@ -87,6 +101,11 @@ func NewCoordinator(runner subagentRunner, model, reduceModel, normativy string,
 		maxInputTokens: maxInputTokens,
 	}
 }
+
+// SetNormRetriever attaches the normative corpus. Without it the coordinator
+// still works, but rule 8 then forbids every citation, which is the honest
+// outcome for an instance with no loaded texts.
+func (c *Coordinator) SetNormRetriever(r normRetriever) { c.norms = r }
 
 // systemPrompt — стабильный кэш-префикс: инструкция координатора + нормативная
 // база. Адаптер OpenRouter кэширует системный префикс (Anthropic prompt cache).
@@ -110,6 +129,9 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 	}
 
 	body := formatDigests(fitted)
+	if excerpts := c.excerpts(ctx, sys, fitted, body); excerpts != "" {
+		body = excerptsHeader + excerpts + "\n\n" + body
+	}
 	start := time.Now()
 	slog.Info("legalreview coordinator start",
 		"model", c.model,
@@ -134,6 +156,46 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 	slog.Info("legalreview coordinator done",
 		"model", c.model, "report_chars", len(out), "ms", time.Since(start).Milliseconds())
 	return out, nil
+}
+
+// excerpts fetches the normative text the fitted digests may cite. Excerpts
+// count toward the input budget; when they do not fit, they are cut — never
+// the digests, which are the evidence. A corpus failure is logged, not fatal:
+// a review without citations beats no review.
+func (c *Coordinator) excerpts(ctx context.Context, sys string, fitted []Digest, body string) string {
+	if c.norms == nil {
+		return ""
+	}
+	texts := make([]string, 0, len(fitted))
+	for _, d := range fitted {
+		if t := strings.TrimSpace(d.Text); t != "" {
+			texts = append(texts, t)
+		}
+	}
+	out, err := c.norms.Excerpts(ctx, texts, excerptsLimit)
+	if err != nil {
+		slog.Warn("legalreview norms excerpts failed", "error", err)
+		return ""
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return ""
+	}
+	room := c.maxInputTokens - estimateTokens(sys) - estimateTokens(body) - estimateTokens(excerptsHeader)
+	if room <= 0 {
+		slog.Warn("legalreview norms excerpts dropped: no budget left", "chunks_chars", len(out))
+		return ""
+	}
+	if estimateTokens(out) > room {
+		cut := room * 4
+		for cut > 0 && cut < len(out) && out[cut]&0xC0 == 0x80 {
+			cut--
+		}
+		out = out[:cut] + "\n[выдержки обрезаны по бюджету контекста]"
+		slog.Info("legalreview norms excerpts truncated", "kept_tokens", room)
+	}
+	slog.Info("legalreview norms excerpts", "chars", len(out))
+	return out
 }
 
 const reduceSystemPrompt = `Ты сжимаешь группу выжимок документов в ОДНУ компактную выжимку для последующей юридической проверки. Сохрани ВСЕ юридически значимые факты с дословными цитатами и ссылками «(файл X, стр. N)». Не делай юридических выводов. Не теряй данные — только убирай дублирование и воду. Формат: список фактов с цитатами и привязкой к файлу/странице.`

@@ -109,3 +109,8 @@ tools:
   bash:
     work_dir: /opt/assistant-yuri/files
     allowed_commands: [pdftotext, pdfinfo, pdfimages, libreoffice, soffice, cat, head, tail, ls, wc, grep, find, unzip, file, iconv]
+
+# Normative corpus for the legal-review pipeline (Yuri only). Folder with full
+# texts of laws and СП, see configs/norms/README.md. Load with --ingest-norms.
+# legal_review:
+#   norms_dir: /opt/assistant-yuri/knowledge/norms

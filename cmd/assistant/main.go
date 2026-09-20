@@ -32,6 +32,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
+	"github.com/olegmatyakubov/go-assistant/internal/app/norms"
 	"github.com/olegmatyakubov/go-assistant/internal/app/projects"
 	"github.com/olegmatyakubov/go-assistant/internal/app/signature"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
@@ -73,6 +74,7 @@ func main() {
 	// Telegram intent does, over a local directory, and exits.
 	reviewDir := flag.String("review-dir", "", "run the legal review over a local directory and exit (requires legal_review.enabled)")
 	reviewOut := flag.String("review-out", "", "where to write the markdown report for --review-dir (default: <dir>/Заключение.md)")
+	ingestNorms := flag.Bool("ingest-norms", false, "index legal_review.norms_dir into the normative corpus and exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -305,6 +307,26 @@ func main() {
 		cfg.LLM.Embedding.Model,
 		"",
 	)
+	// Normative corpus: laws and building codes the coordinator and the model
+	// may cite. Built here because ingest needs only the embedder and the DB.
+	var normSvc *norms.Service
+	if cfg.LegalReview.NormsDir != "" {
+		normSvc = norms.NewService(postgres.NewNormRepo(db), embeddingClient, 4)
+	}
+	if *ingestNorms {
+		if normSvc == nil {
+			slog.Error("--ingest-norms needs legal_review.norms_dir in config")
+			os.Exit(1)
+		}
+		st, err := normSvc.Ingest(context.Background(), cfg.LegalReview.NormsDir)
+		if err != nil {
+			slog.Error("norms ingest failed", "error", err, "stats", st)
+			os.Exit(1)
+		}
+		slog.Info("norms ingest completed", "documents", st.Documents, "skipped", st.Skipped, "chunks", st.Chunks)
+		return
+	}
+
 	memorySvc := memory.NewService(memoryRepo, embeddingClient, memory.ServiceConfig{
 		SimilarityThreshold: cfg.Memory.SimilarityThreshold,
 		DedupThreshold:      cfg.Memory.DedupThreshold,
@@ -466,6 +488,19 @@ func main() {
 		coord := legalreview.NewCoordinator(runner,
 			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
 			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
+		if normSvc != nil {
+			coord.SetNormRetriever(normSvc)
+			register(builtin.NewNormSearch(normSvc))
+			docs, err := normSvc.Documents(context.Background())
+			if err != nil {
+				slog.Error("norms corpus unreadable", "error", err)
+				os.Exit(1)
+			}
+			if len(docs) == 0 {
+				slog.Warn("norms corpus enabled but empty — run with --ingest-norms", "dir", cfg.LegalReview.NormsDir)
+			}
+			slog.Info("norms corpus enabled", "docs", len(docs), "dir", cfg.LegalReview.NormsDir)
+		}
 		// Structured facts ride on the cheap digest model; the deterministic
 		// cross-check of ТЭП/cadastral numbers is built from them in Go.
 		facts := legalreview.NewFactsExtractor(runner, cfg.LegalReview.DigestModel)

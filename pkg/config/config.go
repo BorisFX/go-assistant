@@ -106,8 +106,12 @@ type LegalReview struct {
 	CADPython string `yaml:"cad_python"`
 	CADScript string `yaml:"cad_script"`
 	// OfficeScript enables reading .doc/.docx/.xls/.xlsx через тот же python.
-	OfficeScript              string `yaml:"office_script"`
-	NormativyPath             string `yaml:"normativy_path"`
+	OfficeScript  string `yaml:"office_script"`
+	NormativyPath string `yaml:"normativy_path"`
+	// NormsDir is the folder with full normative texts (laws, СП) that the
+	// corpus indexes. Empty means no corpus: the coordinator then refuses to
+	// cite any norm rather than citing from model memory.
+	NormsDir                  string `yaml:"norms_dir"`
 	MaxFiles                  int    `yaml:"max_files"`
 	Concurrency               int    `yaml:"concurrency"`
 	DigestModel               string `yaml:"digest_model"`
