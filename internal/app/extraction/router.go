@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/olegmatyakubov/go-assistant/internal/app/signature"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
@@ -27,10 +28,13 @@ type localExtractor interface {
 	Extract(ctx context.Context, path string) ([]output.PDFPage, error)
 }
 
+// SignatureInspector reads a detached .sig file; injected so tests never run openssl.
+type SignatureInspector func(ctx context.Context, path string) (signature.Info, error)
+
 // Result is the outcome of routing one document through the extraction layer.
 type Result struct {
 	Path   string
-	Method string // "pdftotext" | "vision" | "mistral-ocr" | "text" | "dwg" | "office"
+	Method string // "pdftotext" | "vision" | "mistral-ocr" | "text" | "dwg" | "office" | "signature"
 	Pages  []output.PDFPage
 }
 
@@ -44,6 +48,7 @@ type Router struct {
 	visionModel  string
 	visionPrompt string
 	denseScan    func(path string) bool
+	sig          SignatureInspector
 }
 
 // Option configures a Router.
@@ -59,6 +64,12 @@ func WithVisionPrompt(p string) Option { return func(r *Router) { r.visionPrompt
 // (→ OCR) rather than a drawing (→ vision). Default: always treat as a drawing.
 func WithDenseScanDetector(f func(path string) bool) Option {
 	return func(r *Router) { r.denseScan = f }
+}
+
+// WithSignatureInspector routes .sig files to the signature reader, so a batch
+// review sees who signed each document instead of skipping the signatures.
+func WithSignatureInspector(f SignatureInspector) Option {
+	return func(r *Router) { r.sig = f }
 }
 
 func NewRouter(remote output.RemotePDFExtractor, opts ...Option) *Router {
@@ -86,6 +97,21 @@ func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
 		pages := []output.PDFPage{{Number: 1, Text: string(raw)}}
 		slog.Info("legalreview extract", "path", path, "method", "text", "pages", 1, "chars", len(raw))
 		return Result{Path: path, Method: "text", Pages: pages}, nil
+	}
+
+	// A detached signature carries no document text; what matters is who
+	// signed, rendered with the caveat that the crypto was not verified.
+	if IsSignature(path) {
+		if r.sig == nil {
+			return Result{}, fmt.Errorf("signature %q: no signature inspector configured", path)
+		}
+		info, err := r.sig(ctx, path)
+		if err != nil {
+			return Result{}, fmt.Errorf("signature extract %q: %w", path, err)
+		}
+		pages := []output.PDFPage{{Number: 1, Text: signature.Render(info)}}
+		slog.Info("legalreview extract", "path", path, "method", "signature", "signatures", info.SignatureCount)
+		return Result{Path: path, Method: "signature", Pages: pages}, nil
 	}
 
 	// A native drawing is read structurally: the numbers on it are legal facts,
@@ -125,6 +151,11 @@ func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
 	}
 	slog.Info("legalreview extract", "path", path, "method", "vision", "model", r.visionModel, "pages", len(vis), "chars", totalChars(vis))
 	return Result{Path: path, Method: "vision", Pages: vis}, nil
+}
+
+// IsSignature reports whether path is a detached electronic signature file.
+func IsSignature(path string) bool {
+	return strings.ToLower(filepath.Ext(path)) == ".sig"
 }
 
 // isTextExt reports whether path is a directly-readable text document (XML tech

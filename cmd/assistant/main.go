@@ -33,6 +33,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/app/projects"
+	"github.com/olegmatyakubov/go-assistant/internal/app/signature"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
 	"github.com/olegmatyakubov/go-assistant/internal/observability"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
@@ -404,7 +405,16 @@ func main() {
 		}
 		extractOpts := []extraction.Option{
 			extraction.WithLocal(extraction.NewLocalExtractor()),
-			extraction.WithVisionModel(cfg.LLM.Vision.Model),
+			// The resolved model, not the raw config value: an instance without
+			// an llm.vision block must still read drawings with the default.
+			extraction.WithVisionModel(visionModel),
+			// A4 scans (suspension orders, contracts) go to OCR; larger sheets
+			// are drawings and go to vision. Without this every scan was read
+			// with the "read the drawing" prompt.
+			extraction.WithDenseScanDetector(extraction.DenseScanByPageSize("pdfinfo")),
+			// Detached signatures are part of the batch: who signed is a fact
+			// the coordinator needs, with the caveat that crypto is unverified.
+			extraction.WithSignatureInspector(signature.Inspect),
 		}
 		// CAD reader: optional, and deliberately loud when configured but broken —
 		// silently falling back to vision on drawings is how a misread dimension
@@ -433,7 +443,10 @@ func main() {
 		coord := legalreview.NewCoordinator(runner,
 			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
 			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
-		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency)
+		// Structured facts ride on the cheap digest model; the deterministic
+		// cross-check of ТЭП/cadastral numbers is built from them in Go.
+		facts := legalreview.NewFactsExtractor(runner, cfg.LegalReview.DigestModel)
+		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency).WithFacts(facts)
 		bot.EnableLegalReview(orch, cfg.LegalReview.MaxFiles, collectors...)
 		slog.Info("legal-review pipeline enabled",
 			"max_files", cfg.LegalReview.MaxFiles, "storages", len(collectors))
