@@ -145,3 +145,32 @@ func TestSplitLong_HardCutOnRuneBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitLawInsertedParts(t *testing.T) {
+	text := `Статья 51. Разрешение на строительство
+
+1. Разрешение подтверждает соответствие.
+
+1.1. Утратил силу.
+
+5. Выдается в случае:
+
+1) первый случай;
+
+7. Застройщик направляет заявление.
+
+7.1-1. По межведомственным запросам.
+
+Статья 51.1. Уведомление
+
+1. Текст.`
+	got := map[string]bool{}
+	for _, c := range Split(text) {
+		got[NormalizeRef(c.Ref)] = true
+	}
+	for _, want := range []string{"ст. 51", "ст. 51 ч. 1", "ст. 51 ч. 1.1", "ст. 51 ч. 5", "ст. 51 ч. 5 п. 1", "ст. 51 ч. 7", "ст. 51 ч. 7.1-1", "ст. 51.1 ч. 1"} {
+		if !got[NormalizeRef(want)] {
+			t.Errorf("missing ref %q; got %v", want, got)
+		}
+	}
+}

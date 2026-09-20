@@ -21,8 +21,9 @@ var (
 	rePart = regexp.MustCompile(`^\s*(\d+)\.\s+\S`)
 	// "7) текст" — a point inside a part.
 	rePoint = regexp.MustCompile(`^\s*(\d+)\)\s+\S`)
-	// "4.3 текст" / "6.1.2. текст" — a numbered clause of a СП/ГОСТ.
-	reClause = regexp.MustCompile(`^\s*(\d+(?:\.\d+)+)\.?\s+\S`)
+	// "4.3 текст" / "6.1.2. текст" — a numbered clause of a СП/ГОСТ, or an
+	// inserted part of a law article ("1.1.", "7.1-1.").
+	reClause = regexp.MustCompile(`^\s*(\d+(?:[.\-]\d+)+)\.?\s+\S`)
 	// "4 Общие требования" — a section heading of a СП/ГОСТ (no dot after
 	// the number, title in capitals). Only meaningful outside a law's articles.
 	reSection = regexp.MustCompile(`^\s*(\d+)\s+[А-ЯЁ]`)
@@ -61,9 +62,17 @@ func Split(text string) []Chunk {
 			article, part = "", ""
 			start("Приложение " + reAppendix.FindStringSubmatch(line)[1])
 		case reClause.MatchString(line):
-			// Dotted numbering belongs to codes of rules; a law never has it.
-			article, part = "", ""
-			start("п. " + reClause.FindStringSubmatch(line)[1])
+			num := reClause.FindStringSubmatch(line)[1]
+			if article != "" {
+				// Inside an article dotted numbering is an inserted part
+				// ("ч. 1.1", "ч. 7.1-1"), not a switch to a code of rules —
+				// otherwise every article after its first amendment lost
+				// all further parts.
+				part = num
+				start(article + " ч. " + num)
+			} else {
+				start("п. " + num)
+			}
 		case article == "" && reSection.MatchString(line):
 			start("п. " + reSection.FindStringSubmatch(line)[1])
 		case rePart.MatchString(line):
