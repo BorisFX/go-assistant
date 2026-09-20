@@ -58,7 +58,7 @@ const coordinatorSystemPrompt = `Ты — ведущий юрист-коорди
         Документы: TextPart стр. 4–5; РнС стр. 5
         Вывод: расхождение требует устранения.»
    Цель — чтобы текст читался как обычное сообщение, без сырой Markdown-разметки.
-8. ИСТОЧНИК НОРМ. Ссылайся на статью или пункт нормы ТОЛЬКО если его текст есть в разделе «ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ» во входе. Если нужного пункта там нет — пиши «текст нормы не загружен в базу, требует проверки» и НЕ цитируй и не пересказывай норму по памяти. Оглавление нормативной базы ниже — только карта, а не текст для цитирования.
+8. ИСТОЧНИК НОРМ. Ссылайся на статью или пункт нормы ТОЛЬКО если его текст есть в разделе «ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ» во входе или получен инструментом norm_search (lookup: doc_code + ref, например doc_code="ГрК РФ", ref="ст. 49 ч. 2"; search: запрос по смыслу; docs: что загружено). Если норма нужна для вывода, а в выдержках её нет — СНАЧАЛА вызови norm_search и процитируй полученный текст. Только если инструмент ничего не вернул — пиши «текст нормы не загружен в базу, требует проверки» и НЕ цитируй и не пересказывай норму по памяти. Оглавление нормативной базы ниже — только карта, а не текст для цитирования.
 9. ПСЕВДОДОКУМЕНТЫ ВО ВХОДЕ. «ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ» — это вопрос, на который отчёт обязан ответить в первую очередь. «АВТОСВЕРКА» — детерминированное сравнение извлечённых чисел (ТЭП, кадастровые номера, адреса), сделанное программой: считай его проверенным фактом, приводи его строки 🔴 как замечания, а при расхождении с твоим прочтением выжимок — укажи оба значения и пометь «требует проверки оригинала».`
 
 const coordinatorMaxTokens = 8192
@@ -84,6 +84,7 @@ const excerptsHeader = "## ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ
 type Coordinator struct {
 	runner         subagentRunner
 	norms          normRetriever // optional: nil when no corpus is configured
+	tools          []string      // tools the coordinator may call (norm_search); empty = single shot
 	model          string        // премиум-модель координатора (Sonnet)
 	reduceModel    string        // дешёвая модель для reduce-прохода при переполнении
 	normativy      string        // нормативная база, инлайнится в системный промпт
@@ -107,6 +108,15 @@ func NewCoordinator(runner subagentRunner, model, reduceModel, normativy string,
 // still works, but rule 8 then forbids every citation, which is the honest
 // outcome for an instance with no loaded texts.
 func (c *Coordinator) SetNormRetriever(r normRetriever) { c.norms = r }
+
+// SetTools lets the coordinator call tools during the review. With norm_search
+// it fetches the exact text of any norm the pre-loaded excerpts missed instead
+// of writing «текст нормы не загружен».
+func (c *Coordinator) SetTools(names ...string) { c.tools = names }
+
+// coordinatorMaxTurns bounds the tool loop: enough for a handful of lookups,
+// the final turn is forced to be text by the runner.
+const coordinatorMaxTurns = 8
 
 // systemPrompt — стабильный кэш-префикс: инструкция координатора + нормативная
 // база. Адаптер OpenRouter кэширует системный префикс (Anthropic prompt cache).
@@ -146,6 +156,10 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 		MaxTurns:     1,
 		Temperature:  0,
 		MaxTokens:    coordinatorMaxTokens,
+	}
+	if len(c.tools) > 0 {
+		cfg.ToolNames = c.tools
+		cfg.MaxTurns = coordinatorMaxTurns
 	}
 	out, err := c.runner.Run(ctx, cfg, body)
 	if err != nil {

@@ -165,3 +165,19 @@ func TestCoordinator_NonConvergingReduceStillTerminates(t *testing.T) {
 		t.Fatalf("must still finish on Sonnet, got %q", last.Model)
 	}
 }
+
+func TestCoordinatorToolsEnableToolLoop(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"отчёт"}}
+	c := NewCoordinator(runner, "m", "r", "", 1000)
+	c.SetTools("norm_search")
+	if _, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runner.cfgs[len(runner.cfgs)-1]
+	if len(cfg.ToolNames) != 1 || cfg.ToolNames[0] != "norm_search" {
+		t.Errorf("tool names not passed: %+v", cfg.ToolNames)
+	}
+	if cfg.MaxTurns != coordinatorMaxTurns {
+		t.Errorf("tool loop must get several turns, got %d", cfg.MaxTurns)
+	}
+}

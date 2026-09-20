@@ -490,6 +490,7 @@ func main() {
 			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
 		if normSvc != nil {
 			coord.SetNormRetriever(normSvc)
+			coord.SetTools("norm_search")
 			register(builtin.NewNormSearch(normSvc))
 			docs, err := normSvc.Documents(context.Background())
 			if err != nil {
