@@ -64,3 +64,17 @@ func filterByExt(paths, exts []string) []string {
 // plans + drawings + detached signatures). XML is read directly as text by the
 // extraction Router; .sig files are rendered as "who signed" pages.
 var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xml", ".dwg", ".dxf", ".sig"}
+
+// RE2 \b is ASCII-only, so the word end is spelled out for Cyrillic.
+var reviewCaptionRe = regexp.MustCompile(`(?i)^\s*(разбери|проверь)(?:$|[\s:—–-]+)(.*)$`)
+
+// ParseReviewCaption recognises the "разбери …" intent on a file sent to the
+// bot: the whole caption after the verb is the focus of the review. This is
+// the lead-magnet path — a counterparty's PDF forwarded with one word.
+func ParseReviewCaption(caption string) (focus string, ok bool) {
+	m := reviewCaptionRe.FindStringSubmatch(caption)
+	if m == nil {
+		return "", false
+	}
+	return strings.TrimSpace(m[2]), true
+}

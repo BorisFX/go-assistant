@@ -223,6 +223,16 @@ func (b *Bot) handleDocumentMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	// «разбери» on a sent file is the review pipeline, not a chat turn: the
+	// premium coordinator with the norms corpus, and a PDF conclusion back.
+	if b.legalReview != nil {
+		if focus, ok := legalreview.ParseReviewCaption(msg.Caption); ok {
+			stream.Finalize("Файл получен, запускаю проверку…")
+			b.handleDocumentReview(msg, localPath, focus)
+			return
+		}
+	}
+
 	caption := msg.Caption
 	if caption == "" {
 		caption = fmt.Sprintf("Analyze the file I sent: %s", msg.Document.FileName)
@@ -459,8 +469,8 @@ func (b *Bot) enrichContent(msg *tgbotapi.Message) string {
 
 func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 	if b.legalReview != nil {
-		if folder, ok := legalreview.ParseReviewFolder(msg.Text); ok {
-			b.handleLegalReview(msg, folder)
+		if folder, focus, ok := legalreview.ParseReviewIntent(msg.Text); ok {
+			b.handleLegalReview(msg, folder, focus)
 			return
 		}
 	}
@@ -521,13 +531,13 @@ func (b *Bot) collectFolder(ctx context.Context, folder string) ([]string, error
 // Drive or Mail.ru, orchestrate per-document digests, then a premium
 // coordinator review. The result is delivered as a client-grade PDF (with a
 // short text preview), stored next to the documents and recorded as a run.
-func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
+func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder, focus string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	chatID := msg.Chat.ID
 	started := time.Now()
-	slog.Info("legalreview request", "folder", folder, "chat_id", chatID)
+	slog.Info("legalreview request", "folder", folder, "focus", focus != "", "chat_id", chatID)
 	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
 
 	paths, err := b.collectFolder(ctx, folder)
@@ -539,19 +549,29 @@ func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 	}
 	slog.Info("legalreview collected", "folder", folder, "files", len(paths))
 
+	b.runReview(ctx, chatID, folder, paths, focus, started)
+}
+
+// runReview is the shared tail of every review trigger (a folder in storage or
+// a file sent to the chat): analyse, preview the findings as text, deliver the
+// PDF, persist the run.
+func (b *Bot) runReview(ctx context.Context, chatID int64, label string, paths []string, focus string, started time.Time) {
 	b.sendText(chatID, fmt.Sprintf("Анализирую %d документов…", len(paths)))
 
-	report, err := b.legalReview.orch.Review(ctx, paths)
+	res, err := b.legalReview.orch.ReviewRequest(ctx, legalreview.ReviewRequest{Paths: paths, Focus: focus})
 	if err != nil {
-		slog.Error("legalreview failed", "folder", folder, "error", err)
+		slog.Error("legalreview failed", "folder", label, "error", err)
 		b.sendText(chatID, "Не удалось провести ревью: "+err.Error())
 		return
 	}
 
+	files := legalreview.DescribeFiles(paths)
+	legalreview.ApplyProvenance(files, res.Digests)
 	run := legalreview.Run{
-		Folder:        folder,
-		Files:         legalreview.DescribeFiles(paths),
-		Report:        report,
+		Folder:        label,
+		Focus:         focus,
+		Files:         files,
+		Report:        res.Report,
 		NormativyHash: b.legalReview.normativyHash,
 		StartedAt:     started,
 		FinishedAt:    time.Now(),
@@ -559,12 +579,25 @@ func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 	run.Models = b.legalReview.models
 
 	// Findings first, as text: Yuri reads them on the phone before the PDF.
-	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(reportPreview(report))
+	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(reportPreview(res.Report))
 
 	b.deliverReport(ctx, chatID, &run)
 	slog.Info("legalreview delivered",
-		"folder", folder, "files", len(paths), "report_chars", len(report),
+		"folder", label, "files", len(paths), "report_chars", len(res.Report),
 		"pdf", run.PDFPath != "", "elapsed_ms", time.Since(started).Milliseconds())
+}
+
+// handleDocumentReview runs the pipeline on a single file sent to the chat with
+// a «разбери …» caption. Long-running, so it gets its own deadline instead of
+// the short one the ordinary document handler uses.
+func (b *Bot) handleDocumentReview(msg *tgbotapi.Message, localPath, focus string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	started := time.Now()
+	label := "файл " + msg.Document.FileName
+	slog.Info("legalreview request", "file", msg.Document.FileName, "focus", focus != "", "chat_id", msg.Chat.ID)
+	b.runReview(ctx, msg.Chat.ID, label, []string{localPath}, focus, started)
 }
 
 // reportPreviewChars bounds the text preview; the full report is in the PDF.

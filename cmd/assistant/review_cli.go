@@ -37,15 +37,18 @@ func runHeadlessReview(orch *legalreview.Orchestrator, cfg *config.Config, norma
 
 	started := time.Now()
 	slog.Info("review-dir: start", "dir", dir, "files", len(paths))
-	report, err := orch.Review(ctx, paths)
+	res, err := orch.ReviewRequest(ctx, legalreview.ReviewRequest{Paths: paths})
 	if err != nil {
 		slog.Error("review-dir: review failed", "error", err)
 		return 1
 	}
+	report := res.Report
 
+	files := legalreview.DescribeFiles(paths)
+	legalreview.ApplyProvenance(files, res.Digests)
 	run := legalreview.Run{
 		Folder:        dir,
-		Files:         legalreview.DescribeFiles(paths),
+		Files:         files,
 		Report:        report,
 		NormativyHash: legalreview.HashText(normativy),
 		StartedAt:     started,

@@ -205,3 +205,21 @@ func formatBytes(n int64) string {
 		return fmt.Sprintf("%d Б", n)
 	}
 }
+
+// ApplyProvenance fills the extraction method and read status of each file
+// from the orchestrator's digests, so «не прочитан» in the report means the
+// pipeline produced no text, not merely that the file was missing on disk.
+func ApplyProvenance(files []FileInfo, digests []Digest) {
+	byPath := make(map[string]Digest, len(digests))
+	for _, d := range digests {
+		byPath[d.Path] = d
+	}
+	for i := range files {
+		d, ok := byPath[files[i].Path]
+		if !ok {
+			continue
+		}
+		files[i].Method = d.Method
+		files[i].Read = strings.TrimSpace(d.Text) != ""
+	}
+}

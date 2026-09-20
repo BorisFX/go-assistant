@@ -98,3 +98,22 @@ func TestHashTextIsStable(t *testing.T) {
 		t.Error("хэш нормативки нестабилен")
 	}
 }
+
+func TestApplyProvenance(t *testing.T) {
+	files := []FileInfo{{Path: "/d/a.pdf", Read: true}, {Path: "/d/b.pdf", Read: true}, {Path: "/d/c.pdf", Read: true}}
+	digests := []Digest{
+		{Path: "/d/a.pdf", Method: "pdftotext", Text: "факт"},
+		{Path: "/d/b.pdf", Method: "vision", Text: "   "},
+		{Path: CollisionsDigestPath, Method: "go", Text: "сверка"},
+	}
+	ApplyProvenance(files, digests)
+	if files[0].Method != "pdftotext" || !files[0].Read {
+		t.Errorf("a.pdf: got %+v", files[0])
+	}
+	if files[1].Method != "vision" || files[1].Read {
+		t.Errorf("b.pdf must be marked unread: got %+v", files[1])
+	}
+	if files[2].Method != "" || !files[2].Read {
+		t.Errorf("c.pdf without digest must stay untouched: got %+v", files[2])
+	}
+}

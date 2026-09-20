@@ -61,3 +61,24 @@ func TestFilterByExt(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReviewCaption(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantFocus string
+		wantOK    bool
+	}{
+		{"разбери", "", true},
+		{"Разбери: замечания Росреестра", "замечания Росреестра", true},
+		{"проверь — что с этажностью", "что с этажностью", true},
+		{"посмотри пожалуйста", "", false},
+		{"", "", false},
+		{"разберись сам", "", false},
+	}
+	for _, c := range cases {
+		focus, ok := ParseReviewCaption(c.in)
+		if ok != c.wantOK || focus != c.wantFocus {
+			t.Errorf("ParseReviewCaption(%q) = (%q, %v), want (%q, %v)", c.in, focus, ok, c.wantFocus, c.wantOK)
+		}
+	}
+}

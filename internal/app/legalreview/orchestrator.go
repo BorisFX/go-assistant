@@ -44,6 +44,13 @@ type ReviewRequest struct {
 	Focus string
 }
 
+// ReviewResult carries the report together with per-document provenance, so
+// the client report can say how each file was read (or that it was not).
+type ReviewResult struct {
+	Report  string
+	Digests []Digest
+}
+
 // Orchestrator прогоняет пачку путей через извлечение+выжимку с ограниченной
 // конкуррентностью и сводит результат координатором.
 type Orchestrator struct {
@@ -70,7 +77,8 @@ func (o *Orchestrator) WithFacts(f factsExtractor) *Orchestrator {
 // Review обрабатывает пачку и возвращает текст отчёта. Kept for callers that
 // have no focus; see ReviewRequest.
 func (o *Orchestrator) Review(ctx context.Context, paths []string) (string, error) {
-	return o.ReviewRequest(ctx, ReviewRequest{Paths: paths})
+	res, err := o.ReviewRequest(ctx, ReviewRequest{Paths: paths})
+	return res.Report, err
 }
 
 // ReviewRequest обрабатывает пачку и возвращает текст отчёта. Падение на одном
@@ -78,10 +86,10 @@ func (o *Orchestrator) Review(ctx context.Context, paths []string) (string, erro
 // всё равно уходит координатору, чтобы пропавший документ не убрал молча
 // юр-вывод. Если не прочитан НИ ОДИН документ — премиум-координатор не зовём,
 // возвращаем ошибку.
-func (o *Orchestrator) ReviewRequest(ctx context.Context, req ReviewRequest) (string, error) {
+func (o *Orchestrator) ReviewRequest(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	paths := req.Paths
 	if len(paths) == 0 {
-		return "", fmt.Errorf("orchestrator: no documents to review")
+		return ReviewResult{}, fmt.Errorf("orchestrator: no documents to review")
 	}
 	start := time.Now()
 	slog.Info("legalreview start", "documents", len(paths), "concurrency", o.concurrency, "focus", req.Focus != "")
@@ -107,7 +115,7 @@ func (o *Orchestrator) ReviewRequest(ctx context.Context, req ReviewRequest) (st
 		}
 	}
 	if read == 0 {
-		return "", fmt.Errorf("orchestrator: no documents could be read (%d failed)", len(paths))
+		return ReviewResult{Digests: digests}, fmt.Errorf("orchestrator: no documents could be read (%d failed)", len(paths))
 	}
 	slog.Info("legalreview digests ready",
 		"total", len(paths), "read", read, "unread", len(paths)-read,
@@ -126,11 +134,11 @@ func (o *Orchestrator) ReviewRequest(ctx context.Context, req ReviewRequest) (st
 
 	report, err := o.reviewer.Review(ctx, all)
 	if err != nil {
-		return "", err
+		return ReviewResult{Digests: digests}, err
 	}
 	slog.Info("legalreview done",
 		"report_chars", len(report), "ms", time.Since(start).Milliseconds())
-	return report, nil
+	return ReviewResult{Report: report, Digests: digests}, nil
 }
 
 // processOne извлекает и выжимает один документ. Любая ошибка → «не прочитан»
