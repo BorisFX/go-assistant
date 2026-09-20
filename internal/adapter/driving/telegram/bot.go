@@ -30,6 +30,29 @@ type legalReviewDeps struct {
 	orch       *legalreview.Orchestrator
 	collectors []FolderCollector
 	maxFiles   int
+	// Optional: where the finished PDF goes besides the chat, and where the
+	// run is recorded. Either may be nil.
+	sink   ReportSink
+	store  legalreview.RunStore
+	models struct{ Digest, Coordinator string }
+	// normativyHash pins every report to the rule set it was checked against.
+	normativyHash string
+}
+
+// ReportSink stores a finished report next to the reviewed documents. Drive
+// implements it; the Mail.ru archive does not, and a nil sink is fine.
+type ReportSink interface {
+	UploadReport(ctx context.Context, folder, name string, data []byte) (string, error)
+}
+
+// ReviewOptions carries the optional legal-review dependencies so the bot's
+// constructor signature stays put as the feature grows.
+type ReviewOptions struct {
+	Sink             ReportSink
+	Store            legalreview.RunStore
+	DigestModel      string
+	CoordinatorModel string
+	NormativyHash    string
 }
 
 type Bot struct {
@@ -110,6 +133,19 @@ func NewBot(
 // instance. Call once after NewBot, only when cfg.LegalReview.Enabled.
 func (b *Bot) EnableLegalReview(orch *legalreview.Orchestrator, maxFiles int, collectors ...FolderCollector) {
 	b.legalReview = &legalReviewDeps{orch: orch, collectors: collectors, maxFiles: maxFiles}
+}
+
+// SetReviewOptions attaches the report sink, run store and provenance to an
+// already-enabled legal review. No-op when the feature is off.
+func (b *Bot) SetReviewOptions(opts ReviewOptions) {
+	if b.legalReview == nil {
+		return
+	}
+	b.legalReview.sink = opts.Sink
+	b.legalReview.store = opts.Store
+	b.legalReview.models.Digest = opts.DigestModel
+	b.legalReview.models.Coordinator = opts.CoordinatorModel
+	b.legalReview.normativyHash = opts.NormativyHash
 }
 
 func (b *Bot) authorize(update tgbotapi.Update) bool {
