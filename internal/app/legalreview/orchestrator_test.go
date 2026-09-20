@@ -168,6 +168,79 @@ func TestOrchestrator_BoundedConcurrency(t *testing.T) {
 	}
 }
 
+// fakeFacts returns scripted facts per path.
+type fakeFacts struct {
+	byPath map[string]Facts
+	calls  int32
+}
+
+func (f *fakeFacts) Extract(_ context.Context, d Digest) Facts {
+	atomic.AddInt32(&f.calls, 1)
+	return f.byPath[d.Path]
+}
+
+// Фокус пользователя и автосверка уходят координатору первыми, документы
+// сохраняют порядок после них.
+func TestOrchestrator_FocusAndCollisionsPrepended(t *testing.T) {
+	facts := &fakeFacts{byPath: map[string]Facts{
+		"/d/техплан.xml": {DocType: "техплан", TEP: TEP{AreaTotalM2: fp(100)}},
+		"/d/РнС.pdf":     {DocType: "разрешение на строительство", TEP: TEP{AreaTotalM2: fp(120)}},
+	}}
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, rev, 2).WithFacts(facts)
+
+	_, err := o.ReviewRequest(context.Background(), ReviewRequest{
+		Paths: []string{"/d/техплан.xml", "/d/РнС.pdf"},
+		Focus: "сверь площадь",
+	})
+	if err != nil {
+		t.Fatalf("ReviewRequest: %v", err)
+	}
+	if len(rev.got) != 4 {
+		t.Fatalf("want focus + collisions + 2 docs, got %d: %+v", len(rev.got), rev.got)
+	}
+	if rev.got[0].Path != FocusDigestPath || rev.got[0].Text != "сверь площадь" {
+		t.Fatalf("focus must come first: %+v", rev.got[0])
+	}
+	if rev.got[1].Path != CollisionsDigestPath || !strings.Contains(rev.got[1].Text, "🔴 Общая площадь") {
+		t.Fatalf("collisions must follow focus: %+v", rev.got[1])
+	}
+	if rev.got[2].Path != "/d/техплан.xml" || rev.got[3].Path != "/d/РнС.pdf" {
+		t.Fatalf("document order not preserved: %+v", rev.got[2:])
+	}
+	if rev.got[2].Facts.DocType != "техплан" {
+		t.Fatalf("facts must be attached to the digest: %+v", rev.got[2])
+	}
+	if facts.calls != 2 {
+		t.Fatalf("facts pass must run once per read document, got %d", facts.calls)
+	}
+}
+
+// Без фокуса и без фактов координатор получает ровно документы, как раньше.
+func TestOrchestrator_NoFactsNoPseudoDocs(t *testing.T) {
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, rev, 2)
+	if _, err := o.Review(context.Background(), []string{"/d/a.pdf", "/d/b.pdf"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(rev.got) != 2 || rev.got[0].Path != "/d/a.pdf" {
+		t.Fatalf("plain review must pass documents only: %+v", rev.got)
+	}
+}
+
+// Факты не извлекаются у непрочитанных документов.
+func TestOrchestrator_FactsSkipUnread(t *testing.T) {
+	facts := &fakeFacts{}
+	ext := &fakeExtractor{errs: map[string]error{"/d/bad.pdf": errors.New("ocr down")}}
+	o := NewOrchestrator(ext, &fakeDigester{}, &fakeReviewer{}, 2).WithFacts(facts)
+	if _, err := o.Review(context.Background(), []string{"/d/ok.pdf", "/d/bad.pdf"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if facts.calls != 1 {
+		t.Fatalf("facts must run only for read documents, got %d calls", facts.calls)
+	}
+}
+
 // Нулевая конкуррентность не должна порождать дедлок (семафор размера 0).
 func TestOrchestrator_ZeroConcurrencyDoesNotDeadlock(t *testing.T) {
 	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, &fakeReviewer{}, 0)

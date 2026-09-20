@@ -56,8 +56,10 @@ Conversation:
 Reply with a bullet list of facts, or NONE.`, strings.Join(transcript, "\n"))
 
 	resp, err := e.llm.Chat(ctx, output.LLMRequest{
-		Messages:    []output.LLMMessage{{Role: entity.RoleUser, Content: prompt}},
-		MaxTokens:   300,
+		Messages: []output.LLMMessage{{Role: entity.RoleUser, Content: prompt}},
+		// Reasoning models spend their budget thinking before writing; 300
+		// tokens came back as finish_reason=length with empty content.
+		MaxTokens:   1024,
 		Temperature: 0.2,
 		Model:       e.model,
 	})

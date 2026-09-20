@@ -66,8 +66,11 @@ type subagentRunner interface {
 // Digest is one document's structured summary with page-cited verbatim quotes.
 type Digest struct {
 	Path   string
-	Method string // extraction provenance from B1: "pdftotext" | "vision" | "mistral-ocr"
+	Method string // extraction provenance from B1: "pdftotext" | "vision" | "mistral-ocr" | "signature" | ...
 	Text   string
+	// Facts is the structured skeleton used by the Go-side cross-check; empty
+	// when extraction was skipped or failed.
+	Facts Facts
 }
 
 // DigestWorker turns an extracted document into a cheap, disciplined digest by

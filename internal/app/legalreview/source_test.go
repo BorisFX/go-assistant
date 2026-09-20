@@ -21,6 +21,33 @@ func TestParseReviewFolder(t *testing.T) {
 	}
 }
 
+func TestParseReviewIntent(t *testing.T) {
+	cases := []struct {
+		in, folder, focus string
+		ok                bool
+	}{
+		{"разбери папку Объект1", "Объект1", "", true},
+		{"разбери папку Объект1: замечания Росреестра", "Объект1", "замечания Росреестра", true},
+		{"разбери папку /Проекты/Дом 5 — что с этажностью?", "/Проекты/Дом 5", "что с этажностью?", true},
+		{"разбери папку «Пирогово» - сверь ТЭП с ГПЗУ", "Пирогово", "сверь ТЭП с ГПЗУ", true},
+		{"разбери папку", "", "", false},
+		{"привет", "", "", false},
+	}
+	for _, c := range cases {
+		folder, focus, ok := ParseReviewIntent(c.in)
+		if ok != c.ok || folder != c.folder || focus != c.focus {
+			t.Fatalf("ParseReviewIntent(%q) = (%q,%q,%v), want (%q,%q,%v)", c.in, folder, focus, ok, c.folder, c.focus, c.ok)
+		}
+	}
+}
+
+func TestReviewExtensionsIncludeSignatures(t *testing.T) {
+	got := filterByExt([]string{"/a.pdf", "/a.pdf.sig", "/b.SIG", "/c.jpg"}, ReviewExtensions)
+	if len(got) != 3 {
+		t.Fatalf("want pdf + two sig files, got %v", got)
+	}
+}
+
 func TestFilterByExt(t *testing.T) {
 	in := []string{"/a.PDF", "/b.txt", "/c.docx", "/d.jpg", "/e.xls"}
 	got := filterByExt(in, []string{".pdf", ".doc", ".docx", ".xls", ".xlsx"})

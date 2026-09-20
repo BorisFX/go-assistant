@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/olegmatyakubov/go-assistant/internal/app/signature"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
@@ -124,6 +126,38 @@ func TestRouter_LocalErrorPropagates(t *testing.T) {
 	r := NewRouter(&fakeRemote{}, WithLocal(local))
 	if _, err := r.Extract(context.Background(), "/tmp/x.pdf"); err == nil {
 		t.Fatalf("want error from local extractor")
+	}
+}
+
+func TestRouter_SigGoesToSignatureInspector(t *testing.T) {
+	local := &fakeLocal{err: errors.New("pdftotext must not run on .sig")}
+	remote := &fakeRemote{}
+	called := ""
+	r := NewRouter(remote, WithLocal(local), WithSignatureInspector(
+		func(_ context.Context, path string) (signature.Info, error) {
+			called = path
+			return signature.Info{Path: path, SignatureCount: 1, Signers: []signature.Signer{{Name: "Иванов И.И.", Serial: "AB"}}}, nil
+		}))
+
+	res, err := r.Extract(context.Background(), "/tmp/техплан.xml.SIG")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if called == "" || res.Method != "signature" || len(res.Pages) != 1 {
+		t.Fatalf("unexpected sig result: %+v called=%q", res, called)
+	}
+	if !strings.Contains(res.Pages[0].Text, "Иванов И.И.") || !strings.Contains(res.Pages[0].Text, "НЕ выполнялась") {
+		t.Fatalf("signature page must name the signer and carry the caveat: %s", res.Pages[0].Text)
+	}
+	if remote.textCalls != 0 || remote.visionCalls != 0 || local.calls != 0 {
+		t.Fatalf("no other engine may run for .sig")
+	}
+}
+
+func TestRouter_SigWithoutInspectorErrors(t *testing.T) {
+	r := NewRouter(&fakeRemote{}, WithLocal(&fakeLocal{}))
+	if _, err := r.Extract(context.Background(), "/tmp/x.sig"); err == nil {
+		t.Fatalf("want error when no inspector configured")
 	}
 }
 
