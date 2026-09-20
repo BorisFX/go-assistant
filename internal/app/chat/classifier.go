@@ -26,6 +26,9 @@ func NewRuleClassifier() *RuleClassifier {
 	c.addRule(`(?i)(напиши код|write code|поправь код|fix code|баг|bug|рефактор|refactor|implement|реализуй)`, valueobject.RouteCode, nil, 0.95)
 	c.addRule(`(?i)(nginx|сервер|server|конфиг|config|деплой|deploy|перезапусти|restart|systemctl)`, valueobject.RouteTool, []string{"bash"}, 0.95)
 	c.addRule(`(?i)(облак|cloud|mail\.ru|объект|обьект|документ|выписк|егрн|скачай|download|прочитай|смета|акт КС|договор подряд|кс-2|кс-3|разрешен\w+ на строит|мебель|склад\b|магазин|гараж|участок|строительств|проанализируй|анализ|подпис|\.sig\b|сертификат|чертеж|чертёж|pdf|техплан|техническ\w+ план|кадастр)`, valueobject.RouteTool, []string{"drive_files", "projects", "cloud_files", "read_pdf", "inspect_signature", "bash"}, 0.95)
+	// Norm citations. A question naming a law, a пункт or a СП must reach the
+	// corpus, otherwise the model answers from memory and invents numbers.
+	c.addRule(`(?i)(нормати|нормы|норма\b|(^|[^а-яё])сп\s*\d|снип|гост|санпин|стать[яеи]|(^|[^а-яё])ст\.?\s*\d|пункт|(^|[^а-яё])п\.\s*\d|218-фз|грк|кодекс|постановлен[а-яё]*\s+правительства|(^|[^а-яё0-9])пп\s*87)`, valueobject.RouteTool, []string{"norm_search"}, 0.95)
 	// Project bookkeeping: route, stage, registry, commercial proposal. Without
 	// this the model has no way to learn a route and starts inventing stages.
 	c.addRule(`(?i)(проект\w*|этап\w*|маршрут\w*|реестр\w*|\bкп\b|коммерческ\w+ предложен|дорожн\w+ карт)`, valueobject.RouteTool, []string{"projects", "drive_files"}, 0.95)

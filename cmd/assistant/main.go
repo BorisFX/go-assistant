@@ -32,6 +32,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/extraction"
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
+	"github.com/olegmatyakubov/go-assistant/internal/app/norms"
 	"github.com/olegmatyakubov/go-assistant/internal/app/projects"
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
 	"github.com/olegmatyakubov/go-assistant/internal/observability"
@@ -68,6 +69,7 @@ DOCUMENT CHECKS (mandatory, override any other workflow):
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
 	migrateOnly := flag.Bool("migrate", false, "run database migrations and exit")
+	ingestNorms := flag.Bool("ingest-norms", false, "index legal_review.norms_dir into the normative corpus and exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -281,6 +283,26 @@ func main() {
 		cfg.LLM.Embedding.Model,
 		"",
 	)
+	// Normative corpus: laws and building codes the coordinator and the model
+	// may cite. Built here because ingest needs only the embedder and the DB.
+	var normSvc *norms.Service
+	if cfg.LegalReview.NormsDir != "" {
+		normSvc = norms.NewService(postgres.NewNormRepo(db), embeddingClient, 4)
+	}
+	if *ingestNorms {
+		if normSvc == nil {
+			slog.Error("--ingest-norms needs legal_review.norms_dir in config")
+			os.Exit(1)
+		}
+		st, err := normSvc.Ingest(context.Background(), cfg.LegalReview.NormsDir)
+		if err != nil {
+			slog.Error("norms ingest failed", "error", err, "stats", st)
+			os.Exit(1)
+		}
+		slog.Info("norms ingest completed", "documents", st.Documents, "skipped", st.Skipped, "chunks", st.Chunks)
+		return
+	}
+
 	memorySvc := memory.NewService(memoryRepo, embeddingClient, memory.ServiceConfig{
 		SimilarityThreshold: cfg.Memory.SimilarityThreshold,
 		DedupThreshold:      cfg.Memory.DedupThreshold,
@@ -433,6 +455,19 @@ func main() {
 		coord := legalreview.NewCoordinator(runner,
 			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
 			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
+		if normSvc != nil {
+			coord.SetNormRetriever(normSvc)
+			registry.Register(builtin.NewNormSearch(normSvc))
+			docs, err := normSvc.Documents(context.Background())
+			if err != nil {
+				slog.Error("norms corpus unreadable", "error", err)
+				os.Exit(1)
+			}
+			if len(docs) == 0 {
+				slog.Warn("norms corpus enabled but empty — run with --ingest-norms", "dir", cfg.LegalReview.NormsDir)
+			}
+			slog.Info("norms corpus enabled", "docs", len(docs), "dir", cfg.LegalReview.NormsDir)
+		}
 		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency)
 		bot.EnableLegalReview(orch, cfg.LegalReview.MaxFiles, collectors...)
 		slog.Info("legal-review pipeline enabled",
