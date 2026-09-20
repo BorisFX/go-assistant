@@ -382,6 +382,10 @@ func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error)
 
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			if attempt < maxRetries-1 {
+				// Gateways load-balance over several origins and pin a keep-alive
+				// connection to one of them. A retry down the same connection hits
+				// the same broken origin, so drop idle connections and redial.
+				c.httpClient.CloseIdleConnections()
 				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 				continue
 			}

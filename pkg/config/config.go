@@ -61,6 +61,9 @@ type GoogleGmail struct {
 	IngestQuery    string        `yaml:"ingest_query"`
 	ProcessedLabel string        `yaml:"processed_label"`
 	PollInterval   time.Duration `yaml:"poll_interval"`
+	// MaxMessages caps one courier pass. A mailbox left unprocessed for a week
+	// would otherwise pull hundreds of attachments in a single burst.
+	MaxMessages int `yaml:"max_messages"`
 }
 
 // Enabled reports whether any Google integration should be wired up.
@@ -70,6 +73,12 @@ func (g Google) Enabled() bool { return g.CredentialsFile != "" }
 // (zero value Enabled=false), so existing configs need no migration.
 type LegalReview struct {
 	Enabled                   bool   `yaml:"enabled"`
+	// CADPython and CADScript enable the structural DWG/DXF reader. Empty means
+	// drawings keep going to the vision model, as before.
+	CADPython string `yaml:"cad_python"`
+	CADScript string `yaml:"cad_script"`
+	// OfficeScript enables reading .doc/.docx/.xls/.xlsx через тот же python.
+	OfficeScript string `yaml:"office_script"`
 	NormativyPath             string `yaml:"normativy_path"`
 	MaxFiles                  int    `yaml:"max_files"`
 	Concurrency               int    `yaml:"concurrency"`
@@ -91,9 +100,25 @@ type Telegram struct {
 }
 
 type LLM struct {
-	Chat      LLMModel `yaml:"chat"`
-	Embedding LLMModel `yaml:"embedding"`
-	Vision    LLMModel `yaml:"vision"`
+	Chat      LLMModel   `yaml:"chat"`
+	Embedding LLMModel   `yaml:"embedding"`
+	Vision    LLMModel   `yaml:"vision"`
+	Image     ImageModel `yaml:"image"`
+}
+
+// ImageModel configures the image-drawing endpoint (OpenAI-compatible
+// /images/generations and /images/edits). An empty Model disables the
+// generate_image tool entirely, which is how instances that shouldn't draw
+// (e.g. the Yuri bot) stay unchanged.
+type ImageModel struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+	// Fallback is tried when the primary model fails — image models refuse
+	// edits of photos of real people often enough to need a second opinion.
+	Fallback string `yaml:"fallback"`
+	BaseURL  string `yaml:"base_url"`
+	APIKey   string `yaml:"api_key"`
+	Size     string `yaml:"size"`
 }
 
 type LLMModel struct {
@@ -171,9 +196,9 @@ type TravelSearch struct {
 }
 
 type ChatConfig struct {
-	MaxTokens    int     `yaml:"max_tokens"`
-	MaxToolTurns int     `yaml:"max_tool_turns"`
-	MaxToolResultChars int `yaml:"max_tool_result_chars"`
+	MaxTokens          int     `yaml:"max_tokens"`
+	MaxToolTurns       int     `yaml:"max_tool_turns"`
+	MaxToolResultChars int     `yaml:"max_tool_result_chars"`
 	ChatTemperature    float64 `yaml:"chat_temperature"`
 	ToolTemperature    float64 `yaml:"tool_temperature"`
 }
@@ -346,6 +371,9 @@ func (c *Config) setDefaults() {
 			// Built after ProcessedLabel so the query excludes the label in use.
 			if c.Google.Gmail.IngestQuery == "" {
 				c.Google.Gmail.IngestQuery = "in:inbox -label:" + c.Google.Gmail.ProcessedLabel
+			}
+			if c.Google.Gmail.MaxMessages == 0 {
+				c.Google.Gmail.MaxMessages = 20
 			}
 			if c.Google.Gmail.PollInterval == 0 {
 				c.Google.Gmail.PollInterval = 15 * time.Minute

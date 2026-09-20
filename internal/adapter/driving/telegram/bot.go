@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -14,15 +15,21 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
-	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 )
+
+// FolderCollector gathers a folder's documents from a storage into local files.
+// Mail.ru Cloud holds the archive, Drive holds everything the mail courier
+// delivers, and "разбери папку" must work over either.
+type FolderCollector interface {
+	CollectFolder(ctx context.Context, sub string, exts []string, maxFiles int) ([]string, error)
+}
 
 // legalReviewDeps holds the optional legal-document-review pipeline. A nil
 // *legalReviewDeps on the Bot means the feature is off (Oleg's instance).
 type legalReviewDeps struct {
-	orch     *legalreview.Orchestrator
-	cloud    *builtin.MailRuCloud
-	maxFiles int
+	orch       *legalreview.Orchestrator
+	collectors []FolderCollector
+	maxFiles   int
 }
 
 type Bot struct {
@@ -36,12 +43,17 @@ type Bot struct {
 	sequencer     *ChatSequencer
 	debouncer     *Debouncer
 	watchdog      *PollingWatchdog
-	ownerID      int64
-	allowedUsers []int64
-	filesDir     string
-	streamMode   StreamMode
-	cancel       context.CancelFunc
-	legalReview  *legalReviewDeps
+	lastImages    *imageMemory
+	ownerID       int64
+	allowedUsers  []int64
+	filesDir      string
+	streamMode    StreamMode
+	cancel        context.CancelFunc
+	legalReview   *legalReviewDeps
+	gmail         gmailSender
+	batches       map[string][]batchItem
+	batchMu       sync.Mutex
+	batchSeq      int
 }
 
 type BotConfig struct {
@@ -72,6 +84,7 @@ func NewBot(
 
 	b := &Bot{
 		api:           api,
+		lastImages:    newImageMemory(time.Now),
 		chatService:   chatService,
 		tradingClient: tradingClient,
 		codeExecutor:  codeExecutor,
@@ -95,15 +108,20 @@ func NewBot(
 
 // EnableLegalReview turns on the legal-document-review pipeline for this bot
 // instance. Call once after NewBot, only when cfg.LegalReview.Enabled.
-func (b *Bot) EnableLegalReview(orch *legalreview.Orchestrator, cloud *builtin.MailRuCloud, maxFiles int) {
-	b.legalReview = &legalReviewDeps{orch: orch, cloud: cloud, maxFiles: maxFiles}
+func (b *Bot) EnableLegalReview(orch *legalreview.Orchestrator, maxFiles int, collectors ...FolderCollector) {
+	b.legalReview = &legalReviewDeps{orch: orch, collectors: collectors, maxFiles: maxFiles}
 }
 
 func (b *Bot) authorize(update tgbotapi.Update) bool {
 	if update.Message == nil {
 		return false
 	}
-	userID := update.Message.From.ID
+	return b.authorizeUser(update.Message.From.ID)
+}
+
+// authorizeUser is the check itself, shared by messages and button presses: a
+// callback carries its own sender and skips every message-level guard.
+func (b *Bot) authorizeUser(userID int64) bool {
 	if userID == b.ownerID {
 		return true
 	}

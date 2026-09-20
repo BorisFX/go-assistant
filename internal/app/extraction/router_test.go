@@ -13,9 +13,11 @@ import (
 type fakeLocal struct {
 	pages []output.PDFPage
 	err   error
+	calls int
 }
 
 func (f *fakeLocal) Extract(_ context.Context, _ string) ([]output.PDFPage, error) {
+	f.calls++
 	return f.pages, f.err
 }
 

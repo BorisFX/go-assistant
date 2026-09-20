@@ -24,6 +24,17 @@ llm:
   vision:
     provider: openrouter
     model: "google/gemini-2.5-flash"
+  # Image drawing and photo editing (OpenAI-compatible /images endpoints).
+  # Omit this block to disable the generate_image tool completely.
+  image:
+    provider: a6api
+    model: "gpt-image-2.5"
+    # Tried when the primary model refuses — image models often decline edits
+    # of photos of real people.
+    fallback: "nano-banana-pro"
+    base_url: "https://a6.a6api.com/v1"
+    api_key: ${A6API_KEY}
+    size: "1024x1024"
 
 database:
   host: localhost
@@ -78,9 +89,11 @@ google:
     registry_id: ""               # project registry spreadsheet id
     registry_sheet: "Проекты"
   gmail:
-    enabled: false
+    enabled: false                # courier: mail attachments -> Drive project folders
+    ingest_query: ""              # default: in:inbox -label:<processed_label>
     processed_label: "Обработано"
     poll_interval: 15m
+    max_messages: 20              # cost guard for one pass
 
 memory:
   fact_extraction_interval: 6          # extract facts every N messages

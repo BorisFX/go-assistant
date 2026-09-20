@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,9 +19,16 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/domain/valueobject"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
+	"github.com/olegmatyakubov/go-assistant/internal/tooling/imgctx"
 )
 
 func (b *Bot) handleUpdate(update tgbotapi.Update) {
+	// Button presses arrive without a Message and carry their own sender, so
+	// they are handled (and authorised) before the message-shaped checks below.
+	if update.CallbackQuery != nil {
+		b.handleDraftCallback(update.CallbackQuery)
+		return
+	}
 	if update.Message == nil {
 		return
 	}
@@ -99,6 +107,34 @@ func (b *Bot) downloadFile(fileID, filename string) (string, error) {
 	}
 
 	return localPath, nil
+}
+
+// withImages hands the tool loop the picture this chat is working on and a sink
+// to collect what it draws — generate_image talks to the handler through ctx.
+func (b *Bot) withImages(ctx context.Context, userID int64, current string) (context.Context, *imgctx.Sink) {
+	if current == "" {
+		current = b.lastImages.get(userID)
+	}
+	if current != "" {
+		ctx = imgctx.WithCurrent(ctx, current)
+	}
+	sink := &imgctx.Sink{}
+	return imgctx.WithSink(ctx, sink), sink
+}
+
+// sendGeneratedImages posts what the tools drew and keeps the last one as the
+// subject of follow-up edits ("now make the hat red").
+func (b *Bot) sendGeneratedImages(chatID, userID int64, sink *imgctx.Sink) {
+	for _, path := range sink.Paths() {
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(path))
+		if _, err := b.api.Send(photo); err != nil {
+			// Telegram rejects photos over 10MB — send the file itself rather
+			// than losing a minute of generation.
+			slog.Error("failed to send generated image as photo", "error", err, "path", path)
+			b.sendFile(chatID, path, "")
+		}
+		b.lastImages.set(userID, path)
+	}
 }
 
 // sendFile sends a file from local disk to Telegram chat
@@ -217,6 +253,12 @@ func (b *Bot) handleDocumentMessage(msg *tgbotapi.Message) {
 	}
 
 	sessionKey := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID))
+	source := ""
+	if len(images) > 0 {
+		source = localPath
+	}
+	ctx, produced := b.withImages(ctx, msg.From.ID, source)
+
 	resp, err := b.chatService.ProcessMessage(ctx, input.ChatRequest{
 		SessionKey: sessionKey,
 		Content:    caption + "\n" + content,
@@ -230,10 +272,12 @@ func (b *Bot) handleDocumentMessage(msg *tgbotapi.Message) {
 	}
 
 	stream.SendChunked(resp.Content)
+	b.sendGeneratedImages(chatID, msg.From.ID, produced)
 }
 
 func (b *Bot) handlePhotoMessage(msg *tgbotapi.Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Drawing on the photo can take minutes — the plain analysis path never did.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	chatID := msg.Chat.ID
@@ -268,6 +312,8 @@ func (b *Bot) handlePhotoMessage(msg *tgbotapi.Message) {
 	}
 
 	sessionKey := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID))
+	ctx, images := b.withImages(ctx, msg.From.ID, localPath)
+
 	resp, err := b.chatService.ProcessMessage(ctx, input.ChatRequest{
 		SessionKey: sessionKey,
 		Content:    caption,
@@ -283,8 +329,8 @@ func (b *Bot) handlePhotoMessage(msg *tgbotapi.Message) {
 	}
 
 	stream.SendChunked(resp.Content)
+	b.sendGeneratedImages(chatID, msg.From.ID, images)
 }
-
 
 func isTextFile(filename, mimeType string) bool {
 	textMimes := []string{"text/", "application/json", "application/xml", "application/yaml", "application/toml", "application/javascript"}
@@ -428,6 +474,8 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 
 	sessionKey := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID))
 
+	ctx, images := b.withImages(ctx, msg.From.ID, "")
+
 	resp, err := b.chatService.ProcessMessage(ctx, input.ChatRequest{
 		SessionKey: sessionKey,
 		Content:    b.enrichContent(msg),
@@ -444,6 +492,28 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 
 	slog.Info("sending response", "chars", len([]rune(resp.Content)))
 	stream.SendChunked(resp.Content)
+	b.sendGeneratedImages(chatID, msg.From.ID, images)
+}
+
+// collectFolder asks every configured storage in turn and takes the first one
+// that yields documents. Drive holds current work — that is where the mail
+// courier delivers attachments — while Mail.ru Cloud holds the archive, so the
+// same phrase has to reach both.
+func (b *Bot) collectFolder(ctx context.Context, folder string) ([]string, error) {
+	var errs []error
+	for _, c := range b.legalReview.collectors {
+		paths, err := c.CollectFolder(ctx, folder, legalreview.ReviewExtensions, b.legalReview.maxFiles)
+		if err == nil && len(paths) > 0 {
+			return paths, nil
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) == 0 {
+		return nil, fmt.Errorf("папка «%s» не найдена ни в одном хранилище", folder)
+	}
+	return nil, errors.Join(errs...)
 }
 
 // handleLegalReview runs the "разбери папку X" intent: collect a Mail.ru folder,
@@ -457,7 +527,7 @@ func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder string) {
 	slog.Info("legalreview request", "folder", folder, "chat_id", chatID)
 	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
 
-	paths, err := b.legalReview.cloud.CollectFolder(ctx, folder, legalreview.ReviewExtensions, b.legalReview.maxFiles)
+	paths, err := b.collectFolder(ctx, folder)
 	if err != nil {
 		// Collect errors are user-meaningful (e.g. the maxFiles guard message).
 		slog.Warn("legalreview collect failed", "folder", folder, "error", err)
@@ -519,6 +589,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.handleMemoryCommand(ctx, msg.Chat.ID)
 	case "cron":
 		b.handleCronCommand(ctx, msg)
+	case "drafts":
+		b.handleDraftsCommand(ctx, msg.Chat.ID)
 	default:
 		reply := tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("Unknown command: /%s", msg.Command()))
 		b.api.Send(reply)
@@ -532,6 +604,7 @@ func (b *Bot) sendHelp(chatID int64) {
 /code <prompt> — run Claude Code
 /memory — what I remember
 /cron — manage scheduled tasks
+/drafts — pending email drafts
 /help — this message
 
 *Cron usage:*

@@ -118,7 +118,7 @@ func (tl *ToolLoop) recordCall(ctx context.Context, call entity.ToolCall, durati
 func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, onUpdate func(string)) (*output.LLMResponse, error) {
 	lastMsg := messages[len(messages)-1].Content
 
-	route, toolNames, confidence := p.classifier.Classify(lastMsg)
+	route, toolNames, confidence := p.classifier.ClassifyWithContext(lastMsg, userHistory(messages))
 	slog.Info("classified message", "route", route, "tools", toolNames, "confidence", confidence)
 
 	if onUpdate != nil {
@@ -362,4 +362,17 @@ func (tl *ToolLoop) Run(
 	}
 
 	return resp, nil
+}
+
+// userHistory returns the user's earlier messages, newest last, without the one
+// being classified. Assistant turns are skipped: its own wording about "письма"
+// would keep tools loaded long after the topic changed.
+func userHistory(messages []output.LLMMessage) []string {
+	var out []string
+	for _, m := range messages[:len(messages)-1] {
+		if m.Role == "user" && m.Content != "" {
+			out = append(out, m.Content)
+		}
+	}
+	return out
 }

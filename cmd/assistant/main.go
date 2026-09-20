@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"path/filepath"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/a6image"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
 	// Aliased: the package name would otherwise clash with the Google SDK's own
@@ -39,6 +40,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/sheets/v4"
 )
 
@@ -165,7 +167,33 @@ func main() {
 		registry.Register(builtin.NewTradingStatus(tradingClient))
 	}
 	filesDir := filepath.Join(filepath.Dir(*configPath), "files")
-	var mailRuCloud *builtin.MailRuCloud
+
+	// Image drawing: no llm.image block means no tool, so instances that never
+	// asked to draw (the Yuri bot) keep exactly the tool set they had.
+	if cfg.LLM.Image.Model != "" {
+		imageKey := cfg.LLM.Image.APIKey
+		if imageKey == "" {
+			imageKey = cfg.LLM.Chat.APIKey
+		}
+		imageClient := a6image.New(
+			imageKey,
+			cfg.LLM.Image.Model,
+			cfg.LLM.Image.Fallback,
+			cfg.LLM.Image.BaseURL,
+			filesDir,
+		).WithSize(cfg.LLM.Image.Size)
+		registry.Register(builtin.NewGenerateImage(imageClient))
+		slog.Info("image generation enabled", "model", cfg.LLM.Image.Model, "fallback", cfg.LLM.Image.Fallback)
+	}
+
+	var (
+		mailRuCloud *builtin.MailRuCloud
+		driveFiles  *builtin.DriveFiles
+		mailCourier *projects.Courier
+		gmailClient *gworkspace.Gmail
+		gmailTool   *builtin.Gmail
+		rfqTool     *builtin.Contractors
+	)
 	if cfg.MailRu.Email != "" {
 		mailRuCloud = builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath, filesDir)
 		registry.Register(mailRuCloud)
@@ -188,7 +216,13 @@ func main() {
 			slog.Error("failed to create google drive client", "error", err)
 			os.Exit(1)
 		}
-		registry.Register(builtin.NewDriveFiles(driveClient, filesDir))
+		driveFiles = builtin.NewDriveFiles(driveClient, filesDir)
+		if mailRuCloud != nil {
+			// Lets an object's folder be carried from the Mail.ru archive into
+			// the project's Drive folder without the bytes passing the model.
+			driveFiles.SetCloudSource(mailRuCloud)
+		}
+		registry.Register(driveFiles)
 		slog.Info("google drive tool enabled",
 			"service_account", creds.Email(),
 			"root_folder_id", cfg.Google.Drive.RootFolderID)
@@ -203,8 +237,41 @@ func main() {
 			slog.Error("failed to create google sheets client", "error", err)
 			os.Exit(1)
 		}
-		registry.Register(builtin.NewProjects(projects.NewService(sheetsClient, driveClient)))
+		projectSvc := projects.NewService(sheetsClient, driveClient)
+		registry.Register(builtin.NewProjects(projectSvc))
 		slog.Info("projects tool enabled", "registry_id", cfg.Google.Sheets.RegistryID)
+
+		if cfg.Google.Gmail.Enabled {
+			// Gmail refuses to act as a service account: every call runs on
+			// behalf of the impersonated mailbox via domain-wide delegation.
+			gmailOpts, err := creds.ClientOptions(context.Background(), cfg.Google.Impersonate,
+				gmail.GmailModifyScope)
+			if err != nil {
+				slog.Error("failed to build gmail auth", "error", err)
+				os.Exit(1)
+			}
+			gmailClient, err = gworkspace.NewGmail(context.Background(), cfg.Google.Impersonate, gmailOpts...)
+			if err != nil {
+				slog.Error("failed to create gmail client", "error", err)
+				os.Exit(1)
+			}
+			gmailTool = builtin.NewGmail(gmailClient, filesDir)
+			registry.Register(gmailTool)
+			// Tender mailings live next to the mailbox: a group of contractors
+			// from the registry, one separate draft each.
+			rfqTool = builtin.NewContractors(projectSvc, gmailClient, filesDir)
+			registry.Register(rfqTool)
+			mailCourier = projects.NewCourier(gmailClient, driveClient, projectSvc, projects.CourierConfig{
+				Query:       cfg.Google.Gmail.IngestQuery,
+				Label:       cfg.Google.Gmail.ProcessedLabel,
+				MaxMessages: cfg.Google.Gmail.MaxMessages,
+				Interval:    cfg.Google.Gmail.PollInterval,
+			}, nil)
+			slog.Info("gmail enabled",
+				"mailbox", cfg.Google.Impersonate,
+				"query", cfg.Google.Gmail.IngestQuery,
+				"poll_interval", cfg.Google.Gmail.PollInterval)
+		}
 	}
 
 	// Memory system
@@ -292,10 +359,41 @@ func main() {
 	// Wire cron send function to bot
 	cronSendFunc = bot.SendToOwner
 
+	// Outgoing mail: the tool only prepares a draft, the confirmation card and
+	// the send button live in Telegram.
+	// A migration outlives the chat request that started it, so its report goes
+	// to Telegram on its own.
+	if driveFiles != nil {
+		driveFiles.SetNotify(bot.SendToOwner)
+	}
+	if gmailClient != nil {
+		bot.EnableGmail(gmailClient)
+		gmailTool.SetOnDraft(bot.SendDraftCard)
+		rfqTool.SetOnRfq(func(r builtin.Rfq) {
+			bot.SendRfqCard(telegram.RfqCard{
+				Group:       r.Group,
+				Subject:     r.Subject,
+				Drafts:      r.Drafts,
+				Skipped:     r.Skipped,
+				Attachments: r.Attachments,
+				Warning:     r.Warning,
+			})
+		})
+	}
+
 	// Legal-document-review pipeline (Yuri instance only; off by default).
 	if cfg.LegalReview.Enabled {
-		if mailRuCloud == nil {
-			slog.Error("legal_review enabled but mail.ru cloud is not configured")
+		// Documents live in two places: the Mail.ru archive and, for everything
+		// the mail courier delivers, Drive. Either one is enough to start.
+		var collectors []telegram.FolderCollector
+		if driveFiles != nil {
+			collectors = append(collectors, driveFiles)
+		}
+		if mailRuCloud != nil {
+			collectors = append(collectors, mailRuCloud)
+		}
+		if len(collectors) == 0 {
+			slog.Error("legal_review enabled but neither google drive nor mail.ru cloud is configured")
 			os.Exit(1)
 		}
 		normativy, err := os.ReadFile(cfg.LegalReview.NormativyPath)
@@ -304,17 +402,41 @@ func main() {
 				"path", cfg.LegalReview.NormativyPath, "error", err)
 			os.Exit(1)
 		}
-		extractRouter := extraction.NewRouter(llmClient,
+		extractOpts := []extraction.Option{
 			extraction.WithLocal(extraction.NewLocalExtractor()),
-			extraction.WithVisionModel(cfg.LLM.Vision.Model))
+			extraction.WithVisionModel(cfg.LLM.Vision.Model),
+		}
+		// CAD reader: optional, and deliberately loud when configured but broken —
+		// silently falling back to vision on drawings is how a misread dimension
+		// ends up in a legal conclusion.
+		if cfg.LegalReview.CADPython != "" {
+			cad, err := extraction.NewDWGExtractor(cfg.LegalReview.CADPython, cfg.LegalReview.CADScript)
+			if err != nil {
+				slog.Error("dwg reader configured but unusable", "error", err)
+				os.Exit(1)
+			}
+			extractOpts = append(extractOpts, extraction.WithCADExtractor(cad))
+			slog.Info("dwg reader enabled", "python", cfg.LegalReview.CADPython, "script", cfg.LegalReview.CADScript)
+		}
+		if cfg.LegalReview.OfficeScript != "" {
+			office, err := extraction.NewOfficeExtractor(cfg.LegalReview.CADPython, cfg.LegalReview.OfficeScript)
+			if err != nil {
+				slog.Error("office reader configured but unusable", "error", err)
+				os.Exit(1)
+			}
+			extractOpts = append(extractOpts, extraction.WithOfficeExtractor(office))
+			slog.Info("office reader enabled", "script", cfg.LegalReview.OfficeScript)
+		}
+		extractRouter := extraction.NewRouter(llmClient, extractOpts...)
 		runner := subagent.NewRunner(chatLLM, registry)
 		worker := legalreview.NewDigestWorker(runner, cfg.LegalReview.DigestModel, cfg.LegalReview.DigestMaxChars)
 		coord := legalreview.NewCoordinator(runner,
 			cfg.LegalReview.CoordinatorModel, cfg.LegalReview.ReduceModel,
 			string(normativy), cfg.LegalReview.CoordinatorMaxInputTokens)
 		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency)
-		bot.EnableLegalReview(orch, mailRuCloud, cfg.LegalReview.MaxFiles)
-		slog.Info("legal-review pipeline enabled", "max_files", cfg.LegalReview.MaxFiles)
+		bot.EnableLegalReview(orch, cfg.LegalReview.MaxFiles, collectors...)
+		slog.Info("legal-review pipeline enabled",
+			"max_files", cfg.LegalReview.MaxFiles, "storages", len(collectors))
 	}
 
 	// Dashboard FS
@@ -361,6 +483,13 @@ func main() {
 
 	// Cron scheduler
 	go cronScheduler.Run(ctx)
+
+	// Mail courier: attachments land in Drive, the digest goes to Telegram, and
+	// the review itself waits for an explicit "разбери папку".
+	if mailCourier != nil {
+		mailCourier.SetNotify(bot.SendToOwner)
+		go mailCourier.Run(ctx)
+	}
 
 	// Warm the Mail.ru cloud index so the first search hits a ready cache
 	// instead of blocking on a multi-minute WebDAV tree walk.

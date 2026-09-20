@@ -58,6 +58,9 @@ google:
 	if cfg.Google.Gmail.PollInterval != 15*time.Minute {
 		t.Errorf("poll_interval default: got %v", cfg.Google.Gmail.PollInterval)
 	}
+	if cfg.Google.Gmail.MaxMessages != 20 {
+		t.Errorf("max_messages default: got %d", cfg.Google.Gmail.MaxMessages)
+	}
 }
 
 func TestGoogleRequiresDriveAndSheets(t *testing.T) {

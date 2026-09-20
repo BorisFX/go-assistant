@@ -1,7 +1,9 @@
 package telegram
 
 import (
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -19,25 +21,90 @@ const (
 	StreamTool     StreamMode = "tool"
 )
 
-type DraftStream struct {
-	chatID    int64
-	messageID int
-	mode      StreamMode
-	bot       *tgbotapi.BotAPI
-	buffer    strings.Builder
-	mu        sync.Mutex
-	ticker    *time.Ticker
-	lastSent  time.Time
-	minDelay  time.Duration
+// maxSendAttempts bounds delivery retries. Telegram's keep-alive connections are
+// dropped every few hours; without a retry the generated answer is lost and the
+// user is left staring at an unfinished draft.
+const maxSendAttempts = 3
+
+// messageSender is the part of tgbotapi.BotAPI the stream depends on, named so
+// retry behaviour is testable without a live Telegram connection.
+type messageSender interface {
+	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
 }
 
-func NewDraftStream(bot *tgbotapi.BotAPI, chatID int64, mode StreamMode) *DraftStream {
+type DraftStream struct {
+	chatID     int64
+	messageID  int
+	mode       StreamMode
+	bot        messageSender
+	buffer     strings.Builder
+	mu         sync.Mutex
+	ticker     *time.Ticker
+	lastSent   time.Time
+	minDelay   time.Duration
+	retryDelay time.Duration
+}
+
+func NewDraftStream(bot messageSender, chatID int64, mode StreamMode) *DraftStream {
 	return &DraftStream{
-		chatID:   chatID,
-		mode:     mode,
-		bot:      bot,
-		minDelay: 2 * time.Second,
+		chatID:     chatID,
+		mode:       mode,
+		bot:        bot,
+		minDelay:   2 * time.Second,
+		retryDelay: time.Second,
 	}
+}
+
+// isRetryable separates failures worth another attempt from ones that will fail
+// identically forever. A malformed request (4xx) is our bug; a dropped
+// connection, a rate limit or a Telegram-side 5xx is not.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var apiErr *tgbotapi.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == http.StatusTooManyRequests || apiErr.Code >= 500
+	}
+
+	// Never reached the API: reset, timeout, DNS, EOF. Worth retrying.
+	return true
+}
+
+// sendWithRetry delivers c, backing off between attempts. It honours Telegram's
+// own retry_after hint when the API supplies one.
+func (d *DraftStream) sendWithRetry(c tgbotapi.Chattable, op string) error {
+	delay := d.retryDelay
+	if delay <= 0 {
+		delay = time.Second
+	}
+
+	var err error
+	for attempt := 1; attempt <= maxSendAttempts; attempt++ {
+		if _, err = d.bot.Send(c); err == nil {
+			if attempt > 1 {
+				slog.Info("telegram send recovered", "op", op, "attempt", attempt)
+			}
+			return nil
+		}
+
+		if !isRetryable(err) || attempt == maxSendAttempts {
+			break
+		}
+
+		wait := delay
+		var apiErr *tgbotapi.Error
+		if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+			wait = time.Duration(apiErr.RetryAfter) * time.Second
+		}
+
+		slog.Warn("telegram send failed, retrying", "op", op, "attempt", attempt, "wait", wait, "err", err)
+		time.Sleep(wait)
+		delay *= 2
+	}
+
+	return err
 }
 
 func (d *DraftStream) SendDraft(text string) error {
@@ -99,7 +166,7 @@ func (d *DraftStream) Finalize(text string) error {
 
 	if d.messageID == 0 {
 		msg := tgbotapi.NewMessage(d.chatID, text)
-		if _, err := d.bot.Send(msg); err != nil {
+		if err := d.sendWithRetry(msg, "finalize send"); err != nil {
 			slog.Error("finalize send failed", "err", err)
 			return err
 		}
@@ -107,7 +174,7 @@ func (d *DraftStream) Finalize(text string) error {
 	}
 
 	edit := tgbotapi.NewEditMessageText(d.chatID, d.messageID, text)
-	if _, err := d.bot.Send(edit); err != nil {
+	if err := d.sendWithRetry(edit, "finalize edit"); err != nil {
 		slog.Error("finalize edit failed", "err", err)
 		return err
 	}
@@ -131,9 +198,11 @@ func (d *DraftStream) SendChunked(text string) error {
 		} else {
 			msg := tgbotapi.NewMessage(d.chatID, chunk)
 			msg.ParseMode = "Markdown"
-			if _, err := d.bot.Send(msg); err != nil {
+			// A surviving error here means Telegram rejected the markup itself
+			// (transport failures are already retried), so drop the formatting.
+			if err := d.sendWithRetry(msg, "chunk"); err != nil {
 				msg.ParseMode = ""
-				if _, err2 := d.bot.Send(msg); err2 != nil {
+				if err2 := d.sendWithRetry(msg, "chunk plain"); err2 != nil {
 					slog.Error("sendChunked send failed", "chunk", i, "markdown_err", err, "plain_err", err2)
 				}
 			}

@@ -30,6 +30,8 @@ type DriveClient interface {
 type DriveFiles struct {
 	client   DriveClient
 	filesDir string
+	cloud    cloudCollector
+	notify   func(string)
 }
 
 func NewDriveFiles(client DriveClient, filesDir string) *DriveFiles {
@@ -39,7 +41,7 @@ func NewDriveFiles(client DriveClient, filesDir string) *DriveFiles {
 func (d *DriveFiles) Name() string { return "drive_files" }
 
 func (d *DriveFiles) Description() string {
-	return "Google Drive project workspace: list, search, read, download, upload, move files, create folders and Google Docs"
+	return "Google Drive project workspace: list, search, read, download, upload, move files, create folders, Google Docs and PDF documents (create_pdf — use it for anything sent to a counterparty: ТЗ, КП, письма-приложения), and import a folder from Mail.ru Cloud"
 }
 
 func (d *DriveFiles) Category() string { return "files" }
@@ -50,26 +52,28 @@ func (d *DriveFiles) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move", "create_doc"],
+				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move", "create_doc", "create_pdf", "import_cloud"],
 				"description": "Operation to perform"
 			},
 			"path": {"type": "string", "description": "Folder path from the drive root, e.g. Vertex/03_Техпланы. Empty means the root. For move it is the destination folder"},
 			"file_id": {"type": "string", "description": "Drive file id, for read, download and move"},
 			"query": {"type": "string", "description": "Text matched against file names, for search"},
 			"name": {"type": "string", "description": "File or folder name, for upload, mkdir and download"},
-			"content": {"type": "string", "description": "Text content, for upload and create_doc"}
+			"content": {"type": "string", "description": "Text content, for upload, create_doc and create_pdf. For create_pdf simple markdown is supported: headings (#), lists, **bold** and |tables|"},
+			"cloud_path": {"type": "string", "description": "For import_cloud: either a folder path in the bot's own Mail.ru Cloud, or a public share link like https://cloud.mail.ru/public/XXXX/YYYY. The whole folder is carried over with its subfolders. With a share link, path may be omitted — the folder is named after the shared folder"}
 		},
 		"required": ["action"]
 	}`)
 }
 
 type driveFilesParams struct {
-	Action  string `json:"action"`
-	Path    string `json:"path"`
-	FileID  string `json:"file_id"`
-	Query   string `json:"query"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
+	Action    string `json:"action"`
+	Path      string `json:"path"`
+	FileID    string `json:"file_id"`
+	Query     string `json:"query"`
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	CloudPath string `json:"cloud_path"`
 }
 
 func (d *DriveFiles) Execute(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
@@ -95,6 +99,10 @@ func (d *DriveFiles) Execute(ctx context.Context, params json.RawMessage) (json.
 		return d.move(ctx, p.FileID, p.Path)
 	case "create_doc":
 		return d.createDoc(ctx, p.Path, p.Name, p.Content)
+	case "create_pdf":
+		return d.createPDF(ctx, p.Path, p.Name, p.Content)
+	case "import_cloud":
+		return d.importCloud(ctx, p.CloudPath, p.Path)
 	default:
 		return nil, fmt.Errorf("unknown action: %s", p.Action)
 	}

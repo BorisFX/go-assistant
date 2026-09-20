@@ -30,7 +30,7 @@ type localExtractor interface {
 // Result is the outcome of routing one document through the extraction layer.
 type Result struct {
 	Path   string
-	Method string // "pdftotext" | "vision" | "mistral-ocr"
+	Method string // "pdftotext" | "vision" | "mistral-ocr" | "text" | "dwg" | "office"
 	Pages  []output.PDFPage
 }
 
@@ -38,6 +38,8 @@ type Result struct {
 // then vision (drawings) or OCR (dense scans) when there is no text layer.
 type Router struct {
 	local        localExtractor
+	cad          *DWGExtractor
+	office       *OfficeExtractor
 	remote       output.RemotePDFExtractor
 	visionModel  string
 	visionPrompt string
@@ -84,6 +86,18 @@ func (r *Router) Extract(ctx context.Context, path string) (Result, error) {
 		pages := []output.PDFPage{{Number: 1, Text: string(raw)}}
 		slog.Info("legalreview extract", "path", path, "method", "text", "pages", 1, "chars", len(raw))
 		return Result{Path: path, Method: "text", Pages: pages}, nil
+	}
+
+	// A native drawing is read structurally: the numbers on it are legal facts,
+	// and a vision model misreading one digit poisons the whole conclusion.
+	if r.cad != nil && IsCAD(path) {
+		return r.extractCAD(ctx, path)
+	}
+
+	// Contracts and estimates: pdftotext cannot open them at all, so without
+	// this branch the document is marked unread while looking processed.
+	if r.office != nil && IsOffice(path) {
+		return r.extractOffice(ctx, path)
 	}
 
 	pages, err := r.local.Extract(ctx, path)

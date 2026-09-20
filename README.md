@@ -6,7 +6,7 @@ Personal AI assistant built in Go with clean architecture (Hexagonal / Ports & A
 
 - **Telegram bot** — draft streaming, polling watchdog, per-chat sequencing, debouncer
 - **Lazy tool loading** — LLM receives only tool names (~300 tokens), full schemas loaded on demand. 90% token savings vs traditional approach
-- **Pluggable tools** — search_web, bash, cloud_files (WebDAV), trading monitor, Claude Code CLI
+- **Pluggable tools** — search_web, bash, cloud_files (WebDAV), generate_image (draw & photo edit), trading monitor, Claude Code CLI
 - **Multimodal** — vision (GPT-4o-mini), voice transcription (Whisper via OpenRouter), document analysis (PDF/DOC/XLS)
 - **Memory** — three-tier: short-term (RAM), working (pgvector), long-term (daily summaries + fact extraction)
 - **Cron scheduler** — periodic tasks stored in PostgreSQL, managed via Telegram commands
@@ -60,6 +60,10 @@ make build
 | `search_web` | Internet search via SearXNG with DuckDuckGo fallback |
 | `bash` | Execute shell commands on the server |
 | `cloud_files` | Mail.ru Cloud WebDAV — list, search, read, download, upload |
+| `drive_files` | Google Shared Drive — list, search, read, download, upload, move, mkdir, create Docs, import a folder from Mail.ru Cloud |
+| `projects` | Project registry in Google Sheets — list, get, create, set_stage |
+| `gmail` | Work mailbox — search, read, download attachments, prepare a draft; sending needs a button press in Telegram |
+| `contractors` | Contractor registry by trade group — list, add, and prepare a tender mailing (one draft per contractor) |
 | `trading_status` | Monitor CryptoAI trading bot |
 | `run_code` | Execute Claude Code CLI for coding tasks |
 
