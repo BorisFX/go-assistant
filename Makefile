@@ -53,6 +53,7 @@ deploy-yuri:
 	GOOS=linux GOARCH=amd64 $(GO) build -o bin/assistant-linux ./cmd/assistant
 	$(SSH) 'systemctl stop assistant-yuri'
 	$(SCP) bin/assistant-linux $(SERVER):/opt/assistant-yuri/assistant.new
+	$(SCP) migrations/*.sql $(SERVER):/opt/assistant-yuri/migrations/
 	$(SSH) 'mv -f /opt/assistant-yuri/assistant.new /opt/assistant-yuri/assistant && chmod +x /opt/assistant-yuri/assistant && systemctl start assistant-yuri'
 	@sleep 3
 	@$(SSH) 'systemctl is-active assistant-yuri && journalctl -u assistant-yuri -n 5 --no-pager'
