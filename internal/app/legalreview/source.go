@@ -63,7 +63,7 @@ func filterByExt(paths, exts []string) []string {
 // ReviewExtensions — document types we review (design: PDF + office + XML tech
 // plans + drawings + detached signatures). XML is read directly as text by the
 // extraction Router; .sig files are rendered as "who signed" pages.
-var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xml", ".dwg", ".dxf", ".sig"}
+var ReviewExtensions = []string{".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xml", ".txt", ".dwg", ".dxf", ".sig"}
 
 // RE2 \b is ASCII-only, so the word end is spelled out for Cyrillic.
 var reviewCaptionRe = regexp.MustCompile(`(?i)^\s*(разбери|проверь)(?:$|[\s:—–-]+)(.*)$`)
