@@ -9,6 +9,20 @@ import (
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
 )
 
+func TestToolsZeroValueDisablesNothing(t *testing.T) {
+	var tools config.Tools
+	if tools.ToolDisabled("bash") {
+		t.Fatal("empty Disabled list must not disable anything")
+	}
+	if len(tools.Bash.AllowedCommands) != 0 {
+		t.Fatal("zero value must leave bash unrestricted")
+	}
+	tools.Disabled = []string{"bash", "run_code"}
+	if !tools.ToolDisabled("bash") || tools.ToolDisabled("read_pdf") {
+		t.Fatal("ToolDisabled must match names exactly")
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")

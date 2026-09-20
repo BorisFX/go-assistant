@@ -146,25 +146,44 @@ func main() {
 		tradingClient = cryptoai.New(cfg.Trading.CryptoAIURL, cfg.Trading.CryptoAIKey)
 	}
 
-	// Tool registry
+	// Tool registry. Every registration goes through register(), which honours
+	// cfg.Tools.Disabled: an instance that must not have a shell simply never
+	// gets the bash tool, and the model never sees its schema.
 	registry := tooling.NewRegistry()
-	registry.Register(builtin.NewSearchWeb(searchClient))
-	registry.Register(builtin.NewRunCode(codeExecutor, cfg.Code.DefaultDir))
+	register := func(tool output.Tool) {
+		if cfg.Tools.ToolDisabled(tool.Name()) {
+			slog.Info("tool disabled by config", "tool", tool.Name())
+			return
+		}
+		if err := registry.Register(tool); err != nil {
+			slog.Error("failed to register tool", "tool", tool.Name(), "error", err)
+		}
+	}
+	register(builtin.NewSearchWeb(searchClient))
+	register(builtin.NewRunCode(codeExecutor, cfg.Code.DefaultDir))
 	if cfg.Obsidian.VaultDir != "" {
-		registry.Register(builtin.NewObsidian(cfg.Obsidian.VaultDir, codeExecutor))
+		register(builtin.NewObsidian(cfg.Obsidian.VaultDir, codeExecutor))
 		slog.Info("obsidian tool enabled", "vault_dir", cfg.Obsidian.VaultDir)
 	}
-	registry.Register(builtin.NewBash())
-	registry.Register(builtin.NewReadPDF())
-	registry.Register(builtin.NewInspectSignature())
+	bashPolicy := builtin.BashPolicy{
+		AllowedCommands: cfg.Tools.Bash.AllowedCommands,
+		WorkDir:         cfg.Tools.Bash.WorkDir,
+	}
+	register(builtin.NewBashWithPolicy(bashPolicy))
+	if bashPolicy.Restricted() {
+		slog.Info("bash tool restricted", "allowed", bashPolicy.AllowedCommands, "work_dir", bashPolicy.WorkDir)
+	}
+	register(builtin.NewReadPDF())
+	register(builtin.NewInspectSignature())
+	register(builtin.NewSearchHistory(messageRepo))
 	if cfg.TravelSearch.RapidAPIKey != "" {
 		rapidClient := builtin.NewRapidAPIClient(cfg.TravelSearch.RapidAPIKey, cfg.TravelSearch.RapidAPIHost)
-		registry.Register(builtin.NewFlightSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
-		registry.Register(builtin.NewHotelSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
+		register(builtin.NewFlightSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
+		register(builtin.NewHotelSearch(rapidClient, cfg.TravelSearch.Currency, cfg.TravelSearch.ResultsLimit))
 		slog.Info("travel search tools enabled", "host", cfg.TravelSearch.RapidAPIHost)
 	}
 	if tradingClient != nil {
-		registry.Register(builtin.NewTradingStatus(tradingClient))
+		register(builtin.NewTradingStatus(tradingClient))
 	}
 	filesDir := filepath.Join(filepath.Dir(*configPath), "files")
 
@@ -182,7 +201,7 @@ func main() {
 			cfg.LLM.Image.BaseURL,
 			filesDir,
 		).WithSize(cfg.LLM.Image.Size)
-		registry.Register(builtin.NewGenerateImage(imageClient))
+		register(builtin.NewGenerateImage(imageClient))
 		slog.Info("image generation enabled", "model", cfg.LLM.Image.Model, "fallback", cfg.LLM.Image.Fallback)
 	}
 
@@ -196,7 +215,7 @@ func main() {
 	)
 	if cfg.MailRu.Email != "" {
 		mailRuCloud = builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath, filesDir)
-		registry.Register(mailRuCloud)
+		register(mailRuCloud)
 	}
 	if cfg.Google.Enabled() {
 		// Fail loudly: a configured but broken Google setup is a deployment
@@ -222,7 +241,7 @@ func main() {
 			// the project's Drive folder without the bytes passing the model.
 			driveFiles.SetCloudSource(mailRuCloud)
 		}
-		registry.Register(driveFiles)
+		register(driveFiles)
 		slog.Info("google drive tool enabled",
 			"service_account", creds.Email(),
 			"root_folder_id", cfg.Google.Drive.RootFolderID)
@@ -238,7 +257,7 @@ func main() {
 			os.Exit(1)
 		}
 		projectSvc := projects.NewService(sheetsClient, driveClient)
-		registry.Register(builtin.NewProjects(projectSvc))
+		register(builtin.NewProjects(projectSvc))
 		slog.Info("projects tool enabled", "registry_id", cfg.Google.Sheets.RegistryID)
 
 		if cfg.Google.Gmail.Enabled {
@@ -256,11 +275,11 @@ func main() {
 				os.Exit(1)
 			}
 			gmailTool = builtin.NewGmail(gmailClient, filesDir)
-			registry.Register(gmailTool)
+			register(gmailTool)
 			// Tender mailings live next to the mailbox: a group of contractors
 			// from the registry, one separate draft each.
 			rfqTool = builtin.NewContractors(projectSvc, gmailClient, filesDir)
-			registry.Register(rfqTool)
+			register(rfqTool)
 			mailCourier = projects.NewCourier(gmailClient, driveClient, projectSvc, projects.CourierConfig{
 				Query:       cfg.Google.Gmail.IngestQuery,
 				Label:       cfg.Google.Gmail.ProcessedLabel,
@@ -331,7 +350,7 @@ func main() {
 	}, cronLoc)
 
 	// Let the assistant manage its own scheduled tasks.
-	registry.Register(builtin.NewManageCron(cronScheduler, cronLoc))
+	register(builtin.NewManageCron(cronScheduler, cronLoc))
 
 	// Telegram bot
 	bot, err := telegram.NewBot(

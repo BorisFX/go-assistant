@@ -1,6 +1,6 @@
 module github.com/olegmatyakubov/go-assistant
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/bodgit/sevenzip v1.6.4
@@ -15,6 +15,7 @@ require (
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.259.0
 	gopkg.in/yaml.v3 v3.0.1
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
@@ -45,7 +46,7 @@ require (
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251222181119-0a764e51fe1b // indirect
 	google.golang.org/grpc v1.78.0 // indirect

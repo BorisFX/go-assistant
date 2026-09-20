@@ -26,9 +26,37 @@ type Config struct {
 	Obsidian     Obsidian     `yaml:"obsidian"`
 	TravelSearch TravelSearch `yaml:"travel_search"`
 	Google       Google       `yaml:"google"`
+	Tools        Tools        `yaml:"tools"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
 	// clock-time cron schedules like "daily at 09:00" to the owner's local time.
 	Timezone string `yaml:"timezone"`
+}
+
+// Tools restricts what the model may call. Zero value keeps today's behaviour:
+// every tool registered, the shell unrestricted. Set per instance where the
+// model reads documents from strangers and must not become a root shell.
+type Tools struct {
+	// Disabled lists tool names that are never registered, e.g. [bash].
+	Disabled []string   `yaml:"disabled"`
+	Bash     BashPolicy `yaml:"bash"`
+}
+
+// BashPolicy confines the bash tool. An empty AllowedCommands means no
+// restriction; otherwise every command in the script must be on the list.
+type BashPolicy struct {
+	AllowedCommands []string `yaml:"allowed_commands"`
+	// WorkDir is where commands run and the only place they may write to.
+	WorkDir string `yaml:"work_dir"`
+}
+
+// ToolDisabled reports whether name is on the Disabled list.
+func (t Tools) ToolDisabled(name string) bool {
+	for _, d := range t.Disabled {
+		if d == name {
+			return true
+		}
+	}
+	return false
 }
 
 type MailRu struct {
@@ -72,13 +100,13 @@ func (g Google) Enabled() bool { return g.CredentialsFile != "" }
 // LegalReview configures the legal-document-review pipeline. Off by default
 // (zero value Enabled=false), so existing configs need no migration.
 type LegalReview struct {
-	Enabled                   bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
 	// CADPython and CADScript enable the structural DWG/DXF reader. Empty means
 	// drawings keep going to the vision model, as before.
 	CADPython string `yaml:"cad_python"`
 	CADScript string `yaml:"cad_script"`
 	// OfficeScript enables reading .doc/.docx/.xls/.xlsx через тот же python.
-	OfficeScript string `yaml:"office_script"`
+	OfficeScript              string `yaml:"office_script"`
 	NormativyPath             string `yaml:"normativy_path"`
 	MaxFiles                  int    `yaml:"max_files"`
 	Concurrency               int    `yaml:"concurrency"`

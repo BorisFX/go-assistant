@@ -23,6 +23,8 @@ func NewRuleClassifier() *RuleClassifier {
 
 	c.addRule(`(?i)(статус|status|баланс|balance|позици|position|pnl|p&l|что с ботом)`, valueobject.RouteTrading, []string{"trading_status"}, 0.95)
 	c.addRule(`(?i)(загугли|google|найти в интернете|look up|в интернете)`, valueobject.RouteSearch, []string{"search_web"}, 0.95)
+	// Recall of earlier conversations goes through a tool, not through psql in bash.
+	c.addRule(`(?i)(мы (уже )?обсуждали|в прошл\w+ раз|напомни, что|история (переписки|диалога)|найди в переписке|что я говорил)`, valueobject.RouteTool, []string{"search_history"}, 0.9)
 	c.addRule(`(?i)(напиши код|write code|поправь код|fix code|баг|bug|рефактор|refactor|implement|реализуй)`, valueobject.RouteCode, nil, 0.95)
 	c.addRule(`(?i)(nginx|сервер|server|конфиг|config|деплой|deploy|перезапусти|restart|systemctl)`, valueobject.RouteTool, []string{"bash"}, 0.95)
 	c.addRule(`(?i)(облак|cloud|mail\.ru|объект|обьект|документ|выписк|егрн|скачай|download|прочитай|смета|акт КС|договор подряд|кс-2|кс-3|разрешен\w+ на строит|мебель|склад\b|магазин|гараж|участок|строительств|проанализируй|анализ|подпис|\.sig\b|сертификат|чертеж|чертёж|pdf|техплан|техническ\w+ план|кадастр)`, valueobject.RouteTool, []string{"drive_files", "projects", "cloud_files", "read_pdf", "inspect_signature", "bash"}, 0.95)

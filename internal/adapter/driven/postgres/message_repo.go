@@ -105,6 +105,34 @@ func (r *MessageRepo) ListMessages(ctx context.Context, conversationID uuid.UUID
 	return messages, nil
 }
 
+// SearchContent finds the most recent messages whose content contains query,
+// case-insensitively. Backs the search_history tool so the model never needs
+// database credentials to look something up.
+func (r *MessageRepo) SearchContent(ctx context.Context, query string, limit int) ([]entity.Message, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, conversation_id, role, content, created_at
+		 FROM messages
+		 WHERE role IN ('user', 'assistant') AND content ILIKE '%' || $1 || '%'
+		 ORDER BY created_at DESC
+		 LIMIT $2`,
+		query, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []entity.Message
+	for rows.Next() {
+		var m entity.Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (r *MessageRepo) ListConversations(ctx context.Context, limit, offset int) ([]*entity.Conversation, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, session_id, title, created_at, updated_at

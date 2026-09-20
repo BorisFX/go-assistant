@@ -100,3 +100,12 @@ memory:
   extraction_model: "deepseek/deepseek-v4-flash"
   similarity_threshold: 0.45           # max cosine distance for RAG matches
   dedup_threshold: 0.15                # skip facts nearer than this to an existing one
+
+# Tool restrictions. Empty = every tool registered, shell unrestricted (the
+# owner's own instance). On an instance that reads documents from strangers
+# the shell should be confined to document utilities and its working folder.
+tools:
+  disabled: []          # e.g. [bash] to remove the shell entirely
+  bash:
+    work_dir: /opt/assistant-yuri/files
+    allowed_commands: [pdftotext, pdfinfo, pdfimages, libreoffice, soffice, cat, head, tail, ls, wc, grep, find, unzip, file, iconv]

@@ -256,3 +256,27 @@ func TestClassifyWithContextKeepsCurrentRoute(t *testing.T) {
 		t.Errorf("маршрут взят из контекста: %v", route)
 	}
 }
+
+// Recalling an earlier conversation must offer search_history: the alternative
+// was the model running psql through bash with the password from the prompt.
+func TestClassifierRoutesHistoryRecall(t *testing.T) {
+	c := chat.NewRuleClassifier()
+
+	for _, input := range []string{
+		"мы уже обсуждали этот объект, напомни",
+		"что я говорил про Пирогово в прошлый раз",
+		"найди в переписке про ГПЗУ",
+	} {
+		_, tools, _ := c.Classify(input)
+
+		found := false
+		for _, got := range tools {
+			if got == "search_history" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("input %q: expected search_history in %v", input, tools)
+		}
+	}
+}
