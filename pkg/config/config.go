@@ -25,6 +25,7 @@ type Config struct {
 	LegalReview  LegalReview  `yaml:"legal_review"`
 	Obsidian     Obsidian     `yaml:"obsidian"`
 	TravelSearch TravelSearch `yaml:"travel_search"`
+	Research     Research     `yaml:"research"`
 	Google       Google       `yaml:"google"`
 	Tools        Tools        `yaml:"tools"`
 	// Timezone is an IANA name (e.g. "Asia/Phnom_Penh"). Used to anchor
@@ -225,6 +226,21 @@ type TravelSearch struct {
 	RapidAPIHost string `yaml:"rapidapi_host"`
 	Currency     string `yaml:"currency"`
 	ResultsLimit int    `yaml:"results_limit"`
+}
+
+// Research configures the keyed sources of the research_recent tool. Hacker
+// News and Polymarket need no key and are always on; Reddit and YouTube join
+// when their keys are set. Reddit falls back to Tavily (site:reddit.com) when
+// the key is missing or the proxy is down.
+type Research struct {
+	Reddit        ResearchReddit `yaml:"reddit"`
+	YouTubeAPIKey string         `yaml:"youtube_api_key"`
+}
+
+// ResearchReddit holds the redditapis.com key (third-party read-only proxy;
+// Reddit's own Data API needs a manual approval we have applied for).
+type ResearchReddit struct {
+	APIKey string `yaml:"api_key"`
 }
 
 type ChatConfig struct {

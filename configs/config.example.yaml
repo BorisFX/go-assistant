@@ -53,6 +53,16 @@ search:
   # Fallback meta-search. Used when Tavily is unconfigured or fails.
   searxng_url: "http://localhost:8888"
 
+# research_recent: "what are people saying about X this week". Hacker News and
+# Polymarket work without keys. Reddit uses redditapis.com (third-party proxy,
+# key issued on signup, $0.002/call); without it Reddit threads come via Tavily.
+# YouTube needs a Data API v3 key from Google Cloud Console (free quota 10k/day,
+# one search = 100 units).
+research:
+  reddit:
+    api_key: ${REDDITAPIS_KEY}
+  youtube_api_key: ${YOUTUBE_API_KEY}
+
 trading:
   cryptoai_url: "http://localhost:5154"
   cryptoai_key: ${CRYPTOAI_KEY}

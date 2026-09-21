@@ -23,6 +23,10 @@ func NewRuleClassifier() *RuleClassifier {
 
 	c.addRule(`(?i)(статус|status|баланс|balance|позици|position|pnl|p&l|что с ботом)`, valueobject.RouteTrading, []string{"trading_status"}, 0.95)
 	c.addRule(`(?i)(загугли|google|найти в интернете|look up|в интернете)`, valueobject.RouteSearch, []string{"search_web"}, 0.95)
+	// "What are people saying about X lately" is cross-platform research, not a
+	// fact lookup: threads, videos and market odds from the last days. search_web
+	// rides along for the facts the discussion refers to.
+	c.addRule(`(?i)(что (сейчас |там )?(говорят|пишут|обсуждают|думают)|what (are people|do people|is everyone) (saying|think|discussing)|buzz|sentiment|тренд|trend|хайп|hype|за (последн\w+ |эт\w+ )?(недел|месяц|дн[яей])|на этой неделе|lately|this week|what.?s new|что нового|reddit|реддит|hacker ?news|хакер ?ньюс|ycombinator|youtube|ютуб|polymarket|полимаркет|предикшн|prediction market)`, valueobject.RouteSearch, []string{"research_recent", "search_web"}, 0.9)
 	// Recall of earlier conversations goes through a tool, not through psql in bash.
 	c.addRule(`(?i)(мы (уже )?обсуждали|в прошл\w+ раз|напомни, что|история (переписки|диалога)|найди в переписке|что я говорил)`, valueobject.RouteTool, []string{"search_history"}, 0.9)
 	c.addRule(`(?i)(напиши код|write code|поправь код|fix code|баг|bug|рефактор|refactor|implement|реализуй)`, valueobject.RouteCode, nil, 0.95)

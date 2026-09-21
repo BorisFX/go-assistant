@@ -280,3 +280,37 @@ func TestClassifierRoutesHistoryRecall(t *testing.T) {
 		}
 	}
 }
+
+// "What are people saying about X lately" is research across discussion
+// platforms, not a fact lookup: research_recent must be on the table.
+func TestClassifierOffersResearchRecent(t *testing.T) {
+	c := chat.NewRuleClassifier()
+	for _, input := range []string{
+		"что говорят про Claude Code на этой неделе",
+		"что пишут на реддите про Go 1.26",
+		"what are people saying about Bun lately",
+		"что обсуждают на hacker news сегодня",
+		"какие тренды в AI за последний месяц",
+		"что там на polymarket по ставке ФРС",
+	} {
+		t.Run(input, func(t *testing.T) {
+			_, tools, _ := c.Classify(input)
+			found := false
+			for _, tool := range tools {
+				if tool == "research_recent" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected research_recent in %v", tools)
+			}
+		})
+	}
+	// A plain factual lookup must not drag research_recent in.
+	_, tools, _ := c.Classify("загугли что такое DDD")
+	for _, tool := range tools {
+		if tool == "research_recent" {
+			t.Errorf("factual lookup should not offer research_recent: %v", tools)
+		}
+	}
+}

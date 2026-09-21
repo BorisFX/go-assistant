@@ -23,6 +23,9 @@ type SearchOptions struct {
 	// Topic selects the corpus: "news" biases toward dated news articles,
 	// "general" (or empty) is the whole web.
 	Topic string
+	// IncludeDomains restricts results to these sites (e.g. ["reddit.com"]).
+	// Providers without domain filtering may ignore it.
+	IncludeDomains []string
 }
 
 type SearchProvider interface {

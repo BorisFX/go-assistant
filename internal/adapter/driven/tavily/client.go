@@ -44,6 +44,8 @@ type apiRequest struct {
 	SearchDepth string `json:"search_depth"`
 	Topic       string `json:"topic,omitempty"`
 	TimeRange   string `json:"time_range,omitempty"`
+	// IncludeDomains narrows the corpus to the listed sites.
+	IncludeDomains []string `json:"include_domains,omitempty"`
 }
 
 type apiResponse struct {
@@ -69,11 +71,12 @@ func (c *Client) Search(ctx context.Context, query string, opts output.SearchOpt
 	}
 
 	reqBody := apiRequest{
-		Query:       query,
-		MaxResults:  maxResults,
-		SearchDepth: "basic",
-		Topic:       normalizeTopic(opts.Topic),
-		TimeRange:   normalizeTimeRange(opts.TimeRange),
+		Query:          query,
+		MaxResults:     maxResults,
+		SearchDepth:    "basic",
+		Topic:          normalizeTopic(opts.Topic),
+		TimeRange:      normalizeTimeRange(opts.TimeRange),
+		IncludeDomains: opts.IncludeDomains,
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {

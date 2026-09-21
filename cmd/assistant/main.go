@@ -22,6 +22,7 @@ import (
 	gworkspace "github.com/olegmatyakubov/go-assistant/internal/adapter/driven/google"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/openrouter"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/postgres"
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/recent"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/search"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/searxng"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/tavily"
@@ -140,8 +141,10 @@ func main() {
 	// Web search: Tavily first (LLM-native, dated & freshness-filtered results),
 	// falling back to SearXNG/DuckDuckGo when Tavily is unconfigured or fails.
 	searchChain := search.NewChain()
+	var tavilyClient *tavily.Client
 	if cfg.Search.Tavily.APIKey != "" {
-		searchChain.Add("tavily", tavily.New(cfg.Search.Tavily.APIKey, cfg.Search.Tavily.Endpoint))
+		tavilyClient = tavily.New(cfg.Search.Tavily.APIKey, cfg.Search.Tavily.Endpoint)
+		searchChain.Add("tavily", tavilyClient)
 		slog.Info("tavily web search enabled")
 	}
 	searchChain.Add("searxng", searxng.New(cfg.Search.SearXNGURL))
@@ -167,6 +170,7 @@ func main() {
 		}
 	}
 	register(builtin.NewSearchWeb(searchClient))
+	register(builtin.NewResearchRecent(researchSources(cfg, tavilyClient)...))
 	register(builtin.NewRunCode(codeExecutor, cfg.Code.DefaultDir))
 	if cfg.Obsidian.VaultDir != "" {
 		register(builtin.NewObsidian(cfg.Obsidian.VaultDir, codeExecutor))
@@ -607,4 +611,37 @@ func main() {
 		slog.Error("bot error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// researchSources assembles the platforms behind research_recent. Keyless ones
+// are always present; Reddit prefers the direct proxy and falls back to Tavily
+// restricted to reddit.com, so the source exists as long as either is set.
+func researchSources(cfg *config.Config, tavilyClient *tavily.Client) []recent.Source {
+	sources := []recent.Source{recent.NewHackerNews(), recent.NewPolymarket()}
+
+	var reddit recent.Source
+	if cfg.Research.Reddit.APIKey != "" {
+		reddit = recent.NewReddit(cfg.Research.Reddit.APIKey)
+	}
+	if tavilyClient != nil {
+		viaSearch := recent.NewRedditViaSearch(tavilyClient)
+		if reddit != nil {
+			reddit = recent.WithFallback(reddit, viaSearch)
+		} else {
+			reddit = viaSearch
+		}
+	}
+	if reddit != nil {
+		sources = append(sources, reddit)
+	}
+	if cfg.Research.YouTubeAPIKey != "" {
+		sources = append(sources, recent.NewYouTube(cfg.Research.YouTubeAPIKey))
+	}
+
+	names := make([]string, 0, len(sources))
+	for _, s := range sources {
+		names = append(names, s.Name())
+	}
+	slog.Info("research_recent enabled", "sources", names)
+	return sources
 }

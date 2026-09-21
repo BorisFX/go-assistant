@@ -79,3 +79,24 @@ func TestClient_Search_NoKey(t *testing.T) {
 		t.Fatal("expected error when api key missing")
 	}
 }
+
+// IncludeDomains narrows the corpus to given sites (used for the Reddit
+// fallback of research_recent) and must reach the API verbatim.
+func TestClient_Search_IncludeDomains(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	client := tavily.New("tvly-test-key", server.URL)
+	_, err := client.Search(context.Background(), "q", output.SearchOptions{IncludeDomains: []string{"reddit.com"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	domains, _ := gotBody["include_domains"].([]any)
+	if len(domains) != 1 || domains[0] != "reddit.com" {
+		t.Errorf("include_domains = %v", gotBody["include_domains"])
+	}
+}
