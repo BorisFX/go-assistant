@@ -13,6 +13,19 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
+// imageToolName is the drawing/editing tool offered whenever a message
+// carries a picture.
+const imageToolName = "generate_image"
+
+func containsName(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
 type Pipeline struct {
 	classifier  *RuleClassifier
 	llm         output.LLMProvider
@@ -132,6 +145,15 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 			hasImages = true
 			break
 		}
+	}
+
+	// A picture is an intent of its own: whoever sends one may want it
+	// redrawn, whatever the caption says. The sticky context can otherwise
+	// leave only document tools on the table, and the model then announces it
+	// cannot edit images. An empty list already means "every tool", so only a
+	// narrowed list needs the addition; unregistered names are skipped later.
+	if hasImages && len(toolNames) > 0 && !containsName(toolNames, imageToolName) {
+		toolNames = append(toolNames, imageToolName)
 	}
 
 	// Tool-driven work (document analysis, signatures, trading, code) is a
