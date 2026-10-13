@@ -87,8 +87,8 @@ func New(apiKey, model, fallback, baseURL string) *Client {
 		provider: provider,
 		// 20 requests/sec burst of 5 — matches OpenRouter's rate limits.
 		// Prevents runaway tool loops from hitting 429s.
-		limiter:  rate.NewLimiter(rate.Limit(20), 5),
-		metrics:  mustLLMMetrics(),
+		limiter: rate.NewLimiter(rate.Limit(20), 5),
+		metrics: mustLLMMetrics(),
 		httpClient: &http.Client{
 			Transport: transport,
 			// Reasoning models (e.g. the legal-review coordinator on Sonnet with an
@@ -100,10 +100,10 @@ func New(apiKey, model, fallback, baseURL string) *Client {
 }
 
 type RequestBody struct {
-	Model       string       `json:"model"`
-	Messages    []APIMessage `json:"messages"`
-	Tools       []APITool    `json:"tools,omitempty"`
-	Plugins     []Plugin     `json:"plugins,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []APIMessage     `json:"messages"`
+	Tools       []APITool        `json:"tools,omitempty"`
+	Plugins     []Plugin         `json:"plugins,omitempty"`
 	MaxTokens   int              `json:"max_tokens,omitempty"`
 	Temperature float64          `json:"temperature,omitempty"`
 	Stream      bool             `json:"stream,omitempty"`
@@ -395,6 +395,18 @@ func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error)
 			return nil, fmt.Errorf("openrouter error %d: %s", resp.StatusCode, string(body))
 		}
 
+		// A broken origin can answer 200 with a non-JSON body (SSE frames or a
+		// plain-text error); treat it like a 5xx rather than a real answer.
+		if !json.Valid(body) {
+			if attempt < maxRetries-1 {
+				slog.Warn("llm returned non-JSON body, retrying", "attempt", attempt+1, "body", truncate(body, 200))
+				c.httpClient.CloseIdleConnections()
+				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+				continue
+			}
+			return nil, fmt.Errorf("non-JSON response: %s", truncate(body, 200))
+		}
+
 		return body, nil
 	}
 
@@ -402,10 +414,23 @@ func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error)
 }
 
 func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMResponse, error) {
-	model := c.model
 	if req.Model != "" {
-		model = req.Model
+		return c.chat(ctx, req.Model, req)
 	}
+	resp, err := c.chat(ctx, c.model, req)
+	// The configured fallback covers only the default chat model: a caller that
+	// pinned a model chose it on purpose.
+	if err == nil || c.fallback == "" || c.fallback == c.model || ctx.Err() != nil {
+		return resp, err
+	}
+	slog.Warn("chat model failed, trying fallback", "model", c.model, "fallback", c.fallback, "error", err)
+	if fbResp, fbErr := c.chat(ctx, c.fallback, req); fbErr == nil {
+		return fbResp, nil
+	}
+	return nil, err
+}
+
+func (c *Client) chat(ctx context.Context, model string, req output.LLMRequest) (*output.LLMResponse, error) {
 	body := BuildRequestBody(model, req)
 
 	jsonBody, err := json.Marshal(body)
@@ -623,4 +648,11 @@ func (c *Client) parseSSE(body io.Reader, onChunk func(string)) (*output.LLMResp
 		}
 	}
 	return result, nil
+}
+
+func truncate(b []byte, n int) string {
+	if len(b) > n {
+		return string(b[:n]) + "…"
+	}
+	return string(b)
 }
