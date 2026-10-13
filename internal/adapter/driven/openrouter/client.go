@@ -414,10 +414,23 @@ func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error)
 }
 
 func (c *Client) Chat(ctx context.Context, req output.LLMRequest) (*output.LLMResponse, error) {
-	model := c.model
 	if req.Model != "" {
-		model = req.Model
+		return c.chat(ctx, req.Model, req)
 	}
+	resp, err := c.chat(ctx, c.model, req)
+	// The configured fallback covers only the default chat model: a caller that
+	// pinned a model chose it on purpose.
+	if err == nil || c.fallback == "" || c.fallback == c.model || ctx.Err() != nil {
+		return resp, err
+	}
+	slog.Warn("chat model failed, trying fallback", "model", c.model, "fallback", c.fallback, "error", err)
+	if fbResp, fbErr := c.chat(ctx, c.fallback, req); fbErr == nil {
+		return fbResp, nil
+	}
+	return nil, err
+}
+
+func (c *Client) chat(ctx context.Context, model string, req output.LLMRequest) (*output.LLMResponse, error) {
 	body := BuildRequestBody(model, req)
 
 	jsonBody, err := json.Marshal(body)
