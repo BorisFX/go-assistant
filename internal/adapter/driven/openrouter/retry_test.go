@@ -57,3 +57,36 @@ func TestRetryAfterServerErrorUsesAFreshConnection(t *testing.T) {
 		t.Errorf("retry reused connection %s — a broken origin would answer it again", conns[0])
 	}
 }
+
+// The gateway sometimes answers 200 with a non-JSON body (an SSE "data: ..."
+// stream or a plain-text error). That is a broken origin, not a real answer,
+// so it must be retried on a fresh connection instead of failing the chat.
+func TestRetryAfterNonJSONSuccessBody(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			fmt.Fprint(w, "data: {\"choices\":[]}\n\n")
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"ок"}}]}`)
+	}))
+	defer srv.Close()
+
+	client := openrouter.New("key", "gemini-3.8-flash", "", srv.URL)
+	resp, err := client.Chat(context.Background(), output.LLMRequest{
+		Messages: []output.LLMMessage{{Role: "user", Content: "привет"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != "ок" {
+		t.Errorf("content = %q, want the retried response", resp.Content)
+	}
+}
