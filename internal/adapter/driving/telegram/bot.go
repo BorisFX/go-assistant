@@ -15,6 +15,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
 	"github.com/olegmatyakubov/go-assistant/internal/port/input"
+	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 )
 
 // FolderCollector gathers a folder's documents from a storage into local files.
@@ -37,6 +38,7 @@ type legalReviewDeps struct {
 	models struct{ Digest, Coordinator string }
 	// normativyHash pins every report to the rule set it was checked against.
 	normativyHash string
+	history       *reviewHistory
 }
 
 // ReportSink stores a finished report next to the reviewed documents. Drive
@@ -53,6 +55,9 @@ type ReviewOptions struct {
 	DigestModel      string
 	CoordinatorModel string
 	NormativyHash    string
+	// History links the review to the chat: recent messages go in as context,
+	// the conclusion comes back as a chat turn. Nil keeps reviews standalone.
+	History output.MessageRepository
 }
 
 type Bot struct {
@@ -67,6 +72,7 @@ type Bot struct {
 	debouncer     *Debouncer
 	watchdog      *PollingWatchdog
 	lastImages    *imageMemory
+	media         *mediaRefs
 	ownerID       int64
 	allowedUsers  []int64
 	filesDir      string
@@ -146,6 +152,7 @@ func (b *Bot) SetReviewOptions(opts ReviewOptions) {
 	b.legalReview.models.Digest = opts.DigestModel
 	b.legalReview.models.Coordinator = opts.CoordinatorModel
 	b.legalReview.normativyHash = opts.NormativyHash
+	b.legalReview.history = newReviewHistory(opts.History)
 }
 
 func (b *Bot) authorize(update tgbotapi.Update) bool {

@@ -2,6 +2,7 @@ package projects_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	gworkspace "github.com/olegmatyakubov/go-assistant/internal/adapter/driven/google"
@@ -158,5 +159,37 @@ func TestRegisterRequiresNameAndRoute(t *testing.T) {
 
 	if err := svc.Register(context.Background(), projects.Project{Name: "X"}); err == nil {
 		t.Fatal("expected an error when the route is missing")
+	}
+}
+
+// Projects live under one folder («Проекты») rather than the drive root, so
+// every path the service builds carries that prefix, while the registry keeps
+// the bare project name.
+func TestServicePrefixesProjectsFolder(t *testing.T) {
+	svc, _, dr := newSvc(map[string][]string{
+		"Проекты/Vertex":               {},
+		"Проекты/Vertex/01_Подготовка": {"Дорожная карта.pdf"},
+	})
+	svc = svc.WithFolder("Проекты")
+
+	st, err := svc.Status(context.Background(), "Vertex", "ОНС_аренда")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if st.Current.Num != 2 {
+		t.Errorf("stage 1 has its document under the prefixed path; current = %d", st.Current.Num)
+	}
+
+	if _, err := svc.Scaffold(context.Background(), "Vertex", "ОНС_аренда"); err != nil {
+		t.Fatalf("scaffold: %v", err)
+	}
+	for _, e := range dr.ensured {
+		if !strings.HasPrefix(e, "Проекты/Vertex/") {
+			t.Errorf("scaffold path %q lacks the projects prefix", e)
+		}
+	}
+
+	if _, err := svc.Scaffold(context.Background(), "Нет", "ОНС_аренда"); err == nil {
+		t.Fatal("a missing project folder must still be an error, not auto-created")
 	}
 }

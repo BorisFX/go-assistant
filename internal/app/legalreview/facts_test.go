@@ -85,3 +85,36 @@ func TestFactsExtractor_UsesCheapModelAndNeverFails(t *testing.T) {
 		t.Fatalf("unread document must not be sent to the model")
 	}
 }
+
+// The cheap model sometimes answers with prose instead of JSON, and a whole
+// document then drops out of the cross-check silently. One stricter retry
+// recovers most of those.
+func TestFactsExtractorRetriesOnUnparsableOutput(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{
+		"Конечно! Вот данные документа: площадь 100 м².",
+		`{"doc_type":"техплан","cadastral_numbers":["78:34:0004163:4729"],"tep":{"area_total_m2":100}}`,
+	}}
+	e := NewFactsExtractor(runner, "m")
+
+	got := e.Extract(context.Background(), Digest{Path: "/d/a.pdf", Text: "текст"})
+	if got.DocType != "техплан" || len(got.CadastralNumbers) != 1 {
+		t.Fatalf("retry must recover the facts, got %+v", got)
+	}
+	if len(runner.tasks) != 2 {
+		t.Fatalf("want one retry, got %d calls", len(runner.tasks))
+	}
+	if !strings.Contains(runner.tasks[1], "ТОЛЬКО JSON") {
+		t.Errorf("the retry must demand bare JSON:\n%s", runner.tasks[1])
+	}
+}
+
+func TestFactsExtractorGivesUpAfterTheRetry(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"проза", "снова проза"}}
+	e := NewFactsExtractor(runner, "m")
+	if got := e.Extract(context.Background(), Digest{Path: "/d/a.pdf", Text: "текст"}); !got.Empty() {
+		t.Fatalf("want empty facts, got %+v", got)
+	}
+	if len(runner.tasks) != 2 {
+		t.Fatalf("want exactly one retry, got %d calls", len(runner.tasks))
+	}
+}

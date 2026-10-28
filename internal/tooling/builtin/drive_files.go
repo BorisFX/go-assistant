@@ -28,11 +28,16 @@ type DriveClient interface {
 // DriveFiles exposes the project shared drive to the model. The action-dispatch
 // shape mirrors cloud_files so both storages present the same contract.
 type DriveFiles struct {
-	client   DriveClient
-	filesDir string
-	cloud    cloudCollector
-	notify   func(string)
+	projectsFolder string
+	client         DriveClient
+	filesDir       string
+	cloud          cloudCollector
+	notify         func(string)
 }
+
+// SetProjectsFolder names the Drive folder holding the projects («Проекты»),
+// so bare project names resolve there for reviews and report uploads.
+func (d *DriveFiles) SetProjectsFolder(folder string) { d.projectsFolder = strings.Trim(folder, "/") }
 
 func NewDriveFiles(client DriveClient, filesDir string) *DriveFiles {
 	return &DriveFiles{client: client, filesDir: filesDir}

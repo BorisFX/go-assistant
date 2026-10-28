@@ -74,6 +74,10 @@ func (d *DriveFiles) createPDF(ctx context.Context, path, name, content string) 
 func (d *DriveFiles) UploadReport(ctx context.Context, folder, name string, data []byte) (string, error) {
 	dest := strings.Trim(folder, "/")
 	folderID, err := d.client.EnsurePath(ctx, dest)
+	if err != nil && d.projectsFolder != "" && !strings.HasPrefix(dest, d.projectsFolder+"/") {
+		dest = d.projectsFolder + "/" + dest
+		folderID, err = d.client.EnsurePath(ctx, dest)
+	}
 	if err != nil {
 		dest = reportsFolder
 		if folderID, err = d.client.EnsurePath(ctx, dest); err != nil {

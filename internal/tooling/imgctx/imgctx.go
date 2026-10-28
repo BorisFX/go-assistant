@@ -59,3 +59,49 @@ func SinkFrom(ctx context.Context) *Sink {
 	sink, _ := ctx.Value(sinkKey{}).(*Sink)
 	return sink
 }
+
+type refsKey struct{}
+type videoDeliveryKey struct{}
+
+// Refs are the pictures and clips the user sent as references for a
+// generation, oldest first — "image 1" in a prompt is Images[0].
+type Refs struct {
+	Images []string
+	Videos []string
+	// Used, when set, tells the owner a generation consumed this set, so the
+	// next picture the user sends starts a fresh one instead of piling on.
+	Used func()
+}
+
+// MarkUsed is safe on a Refs without a Used hook.
+func (r Refs) MarkUsed() {
+	if r.Used != nil {
+		r.Used()
+	}
+}
+
+func (r Refs) Empty() bool { return len(r.Images) == 0 && len(r.Videos) == 0 }
+
+func WithRefs(ctx context.Context, refs Refs) context.Context {
+	return context.WithValue(ctx, refsKey{}, refs)
+}
+
+func RefsFrom(ctx context.Context) Refs {
+	refs, _ := ctx.Value(refsKey{}).(Refs)
+	return refs
+}
+
+// VideoDelivery posts a finished clip (or the reason it failed) to the chat
+// that asked for it. Video renders outlive the chat request, so the tool runs
+// them in the background and reports through this callback.
+type VideoDelivery func(path string, err error)
+
+func WithVideoDelivery(ctx context.Context, deliver VideoDelivery) context.Context {
+	return context.WithValue(ctx, videoDeliveryKey{}, deliver)
+}
+
+// VideoDeliveryFrom returns nil outside a chat request (cron jobs, subagents).
+func VideoDeliveryFrom(ctx context.Context) VideoDelivery {
+	deliver, _ := ctx.Value(videoDeliveryKey{}).(VideoDelivery)
+	return deliver
+}

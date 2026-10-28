@@ -18,7 +18,7 @@ const driveWalkDepth = 6
 // either storage. Files are cached under filesDir/drive/<path>, archives are
 // unpacked, and the file count is guarded before any download.
 func (d *DriveFiles) CollectFolder(ctx context.Context, sub string, exts []string, maxFiles int) ([]string, error) {
-	folderID, err := d.client.ResolvePath(ctx, sub)
+	folderID, err := d.resolveFolder(ctx, sub)
 	if err != nil {
 		return nil, fmt.Errorf("collect folder %q: %w", sub, err)
 	}
@@ -122,3 +122,42 @@ var _ interface {
 var _ interface {
 	CollectFolder(ctx context.Context, sub string, exts []string, maxFiles int) ([]string, error)
 } = (*MailRuCloud)(nil)
+
+// resolveFolder turns what the user typed into a folder id. A path resolves
+// from the drive root; a bare name that is not there is searched across the
+// drive, because project folders live under «Проекты» and nobody remembers to
+// type the prefix. Several folders with that exact name is an error rather
+// than a guess: reviewing the wrong object would be worse than asking.
+func (d *DriveFiles) resolveFolder(ctx context.Context, sub string) (string, error) {
+	id, err := d.client.ResolvePath(ctx, sub)
+	if err == nil {
+		return id, nil
+	}
+	if d.projectsFolder != "" && !strings.HasPrefix(strings.Trim(sub, "/"), d.projectsFolder+"/") {
+		if id, perr := d.client.ResolvePath(ctx, d.projectsFolder+"/"+strings.Trim(sub, "/")); perr == nil {
+			return id, nil
+		}
+	}
+	if strings.Contains(strings.Trim(sub, "/"), "/") {
+		return "", err
+	}
+	hits, serr := d.client.Search(ctx, sub)
+	if serr != nil {
+		return "", err
+	}
+	var folders []struct{ ID, Name string }
+	for _, h := range hits {
+		if h.IsFolder && strings.EqualFold(h.Name, sub) {
+			folders = append(folders, struct{ ID, Name string }{h.ID, h.Name})
+		}
+	}
+	switch len(folders) {
+	case 0:
+		return "", err
+	case 1:
+		slog.Info("drive collect: folder found by name", "name", sub, "id", folders[0].ID)
+		return folders[0].ID, nil
+	default:
+		return "", fmt.Errorf("на Диске несколько папок «%s» — укажите путь, например Проекты/%s", sub, sub)
+	}
+}

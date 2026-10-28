@@ -117,3 +117,25 @@ func TestApplyProvenance(t *testing.T) {
 		t.Errorf("c.pdf without digest must stay untouched: got %+v", files[2])
 	}
 }
+
+// The cross-check is deterministic Go: it goes into the report verbatim rather
+// than through the coordinator's retelling of it.
+func TestBuildReportMarkdownCarriesCrossCheckAndUnverified(t *testing.T) {
+	run := Run{
+		Folder:     "testHotel",
+		Report:     "ЗАМЕЧАНИЯ\n1. Площадь застройки 28 600 м².",
+		CrossCheck: "АВТОСВЕРКА\n🔴 Общая площадь, м²: техплан 100, РнС 120",
+		Unverified: []Unverified{{Value: "28600", Kind: "величина", Quote: "28 600 м²"}},
+		Files:      []FileInfo{{Name: "а.pdf", Read: true}},
+	}
+	md := BuildReportMarkdown(run)
+	if !strings.Contains(md, "🔴 Общая площадь, м²: техплан 100, РнС 120") {
+		t.Errorf("cross-check block missing:\n%s", md)
+	}
+	if !strings.Contains(md, "НЕ ПОДТВЕРЖДЕНО") || !strings.Contains(md, "28 600 м²") {
+		t.Errorf("unverified block missing:\n%s", md)
+	}
+	if strings.Index(md, "АВТОСВЕРКА") > strings.Index(md, "ЗАМЕЧАНИЯ") {
+		t.Error("the verified facts must precede the model's narrative")
+	}
+}

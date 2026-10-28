@@ -38,10 +38,12 @@ type fakeTool struct {
 	calls  int
 }
 
-func (t *fakeTool) Name() string           { return t.name }
-func (t *fakeTool) Description() string     { return "fake tool " + t.name }
-func (t *fakeTool) Category() string        { return "test" }
-func (t *fakeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object","properties":{}}`) }
+func (t *fakeTool) Name() string        { return t.name }
+func (t *fakeTool) Description() string { return "fake tool " + t.name }
+func (t *fakeTool) Category() string    { return "test" }
+func (t *fakeTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
 func (t *fakeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	t.calls++
 	return json.RawMessage(t.result), nil

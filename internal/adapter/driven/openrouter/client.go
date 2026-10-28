@@ -367,16 +367,25 @@ func (c *Client) doRequest(ctx context.Context, jsonBody []byte) ([]byte, error)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
-			if attempt < maxRetries-1 && (strings.Contains(err.Error(), "GOAWAY") || strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "EOF")) {
+			if attempt < maxRetries-1 && isTransportError(err) {
+				c.httpClient.CloseIdleConnections()
 				time.Sleep(time.Duration(attempt+1) * time.Second)
 				continue
 			}
 			return nil, fmt.Errorf("do request: %w", err)
 		}
-		defer resp.Body.Close()
 
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
+			// A minutes-long completion can be cut mid-body by the gateway; that
+			// is the same transient failure as a refused connection, just later.
+			if attempt < maxRetries-1 && isTransportError(err) {
+				slog.Warn("llm response body truncated, retrying", "attempt", attempt+1, "error", err)
+				c.httpClient.CloseIdleConnections()
+				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+				continue
+			}
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 
@@ -459,6 +468,7 @@ func (c *Client) chat(ctx context.Context, model string, req output.LLMRequest) 
 	choice := apiResp.Choices[0]
 	result := &output.LLMResponse{
 		Content:      extractContent(choice.Message.Content),
+		FinishReason: choice.FinishReason,
 		InputTokens:  apiResp.Usage.PromptTokens,
 		OutputTokens: apiResp.Usage.CompletionTokens,
 		Model:        apiResp.Model,
@@ -648,6 +658,18 @@ func (c *Client) parseSSE(body io.Reader, onChunk func(string)) (*output.LLMResp
 		}
 	}
 	return result, nil
+}
+
+// isTransportError reports a connection-level failure worth retrying on a
+// fresh connection: the peer went away, not "the request was wrong".
+func isTransportError(err error) bool {
+	msg := err.Error()
+	for _, sig := range []string{"GOAWAY", "connection reset", "EOF", "broken pipe", "unexpected EOF"} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(b []byte, n int) string {

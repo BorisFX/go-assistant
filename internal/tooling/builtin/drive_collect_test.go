@@ -15,16 +15,23 @@ import (
 // treeDrive serves a folder tree keyed by folder id, so recursion is exercised
 // for real instead of being faked at the top level.
 type treeDrive struct {
-	tree      map[string][]gworkspace.FileInfo
-	downloads int
-	failOn    string
+	tree       map[string][]gworkspace.FileInfo
+	searchable []gworkspace.FileInfo // what Search returns, matched by substring
+	downloads  int
+	failOn     string
 }
 
 func (d *treeDrive) List(ctx context.Context, folderID string) ([]gworkspace.FileInfo, error) {
 	return d.tree[folderID], nil
 }
 func (d *treeDrive) Search(ctx context.Context, text string) ([]gworkspace.FileInfo, error) {
-	return nil, nil
+	var out []gworkspace.FileInfo
+	for _, f := range d.searchable {
+		if strings.Contains(strings.ToLower(f.Name), strings.ToLower(text)) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 func (d *treeDrive) Download(ctx context.Context, fileID string) ([]byte, error) {
 	if fileID == d.failOn {
@@ -46,7 +53,7 @@ func (d *treeDrive) CreateDoc(ctx context.Context, parentID, name, text string) 
 	return gworkspace.FileInfo{}, nil
 }
 func (d *treeDrive) ResolvePath(ctx context.Context, path string) (string, error) {
-	if path == "Ленина_42/99_Переписка" {
+	if path == "Ленина_42/99_Переписка" || path == "Проекты/Ленина_42/99_Переписка" {
 		return "corr", nil
 	}
 	return "", errors.New("folder not found")
@@ -149,5 +156,50 @@ func TestDriveCollectFolderReportsMissingFolder(t *testing.T) {
 
 	if _, err := tool.CollectFolder(context.Background(), "Нет_такого", []string{".pdf"}, 60); err == nil {
 		t.Fatal("expected an error for a missing folder")
+	}
+}
+
+// A bare folder name («разбери папку testHotel») is looked up by name when it
+// is not directly under the root, so the user need not remember «Проекты/».
+func TestDriveCollectFolderFindsBareNameBySearch(t *testing.T) {
+	drive := &treeDrive{tree: correspondenceTree(), searchable: []gworkspace.FileInfo{
+		{ID: "f9", Name: "99_Переписка.pdf"}, // a file with the same stem must not win
+		{ID: "corr", Name: "99_Переписка", IsFolder: true},
+	}}
+	tool := builtin.NewDriveFiles(drive, t.TempDir())
+
+	paths, err := tool.CollectFolder(context.Background(), "99_переписка", []string{".pdf", ".xlsx"}, 60)
+	if err != nil {
+		t.Fatalf("CollectFolder: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("want 2 documents via search fallback, got %v", paths)
+	}
+}
+
+func TestDriveCollectFolderAmbiguousNameIsAnError(t *testing.T) {
+	drive := &treeDrive{tree: correspondenceTree(), searchable: []gworkspace.FileInfo{
+		{ID: "corr", Name: "Переписка", IsFolder: true},
+		{ID: "sub", Name: "Переписка", IsFolder: true},
+	}}
+	tool := builtin.NewDriveFiles(drive, t.TempDir())
+
+	_, err := tool.CollectFolder(context.Background(), "Переписка", []string{".pdf"}, 60)
+	if err == nil || !strings.Contains(err.Error(), "несколько") {
+		t.Fatalf("want ambiguity error, got %v", err)
+	}
+}
+
+func TestDriveCollectFolderTriesProjectsPrefix(t *testing.T) {
+	drive := &treeDrive{tree: correspondenceTree()}
+	tool := builtin.NewDriveFiles(drive, t.TempDir())
+	tool.SetProjectsFolder("Проекты")
+
+	paths, err := tool.CollectFolder(context.Background(), "Ленина_42/99_Переписка", []string{".pdf", ".xlsx"}, 60)
+	if err != nil {
+		t.Fatalf("CollectFolder: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("want 2 documents, got %v", paths)
 	}
 }

@@ -59,6 +59,50 @@ func TestRetryAfterServerErrorUsesAFreshConnection(t *testing.T) {
 	}
 }
 
+// A long completion (the review coordinator runs for minutes) can have its
+// response body cut mid-stream by the gateway. That surfaces as a read error,
+// not a status code, and must be retried on a fresh connection like a 502.
+func TestRetryAfterBodyReset(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"choices":[{"message":`)
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close() // body truncated: client sees EOF / connection reset
+			}
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"готово"}}]}`)
+	}))
+	defer srv.Close()
+
+	client := openrouter.New("key", "m", "", srv.URL)
+	resp, err := client.Chat(context.Background(), output.LLMRequest{
+		Messages: []output.LLMMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat after body reset: %v", err)
+	}
+	if resp.Content != "готово" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Errorf("server saw %d calls, want the truncated one retried once", calls)
+	}
+}
+
 // The gateway sometimes answers 200 with a non-JSON body (an SSE "data: ..."
 // stream or a plain-text error). That is a broken origin, not a real answer,
 // so it must be retried on a fresh connection instead of failing the chat.

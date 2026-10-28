@@ -673,7 +673,7 @@ func (m *MailRuCloud) downloadFile(ctx context.Context, path string) (json.RawMe
 	ext := strings.ToLower(filepath.Ext(safeFilename))
 	extractedText := ""
 	if ext == ".pdf" {
-		cmd := exec.CommandContext(ctx, "pdftotext", localPath, "-")
+		cmd := exec.CommandContext(ctx, "pdftotext", "-layout", "-enc", "UTF-8", localPath, "-")
 		output, err := cmd.Output()
 		if err == nil {
 			extractedText = string(output)

@@ -70,3 +70,21 @@ func TestUploadReportFailsWhenNoFolderAtAll(t *testing.T) {
 		t.Error("без папки отчёт некуда класть — ожидалась ошибка")
 	}
 }
+
+// The review is triggered by a bare project name; the report must land in the
+// project's folder under «Проекты», not in the generic reports folder.
+func TestUploadReportTriesProjectsPrefix(t *testing.T) {
+	drive := &reportDrive{known: map[string]string{"Проекты/testHotel": "hotel-id", "Отчёты": "reports-id"}}
+	d := builtin.NewDriveFiles(drive, t.TempDir())
+	d.SetProjectsFolder("Проекты")
+	path, err := d.UploadReport(context.Background(), "testHotel", "Заключение.pdf", []byte("%PDF"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "Проекты/testHotel/Заключение.pdf" {
+		t.Errorf("путь отчёта: %q", path)
+	}
+	if len(drive.uploaded) != 1 || !strings.HasPrefix(drive.uploaded[0], "hotel-id/") {
+		t.Errorf("загрузка: %v", drive.uploaded)
+	}
+}

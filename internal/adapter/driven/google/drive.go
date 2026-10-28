@@ -167,6 +167,13 @@ func (d *Drive) Download(ctx context.Context, fileID string) ([]byte, error) {
 }
 
 func (d *Drive) Upload(ctx context.Context, parentID, name, mimeType string, content []byte) (FileInfo, error) {
+	return d.UploadStream(ctx, parentID, name, mimeType, bytes.NewReader(content))
+}
+
+// UploadStream sends a body the caller streams in, so a multi-hundred-megabyte
+// archive never sits in memory: past the chunk size the SDK switches to Drive's
+// resumable upload and retries individual chunks on its own.
+func (d *Drive) UploadStream(ctx context.Context, parentID, name, mimeType string, r io.Reader) (FileInfo, error) {
 	if name == "" {
 		return FileInfo{}, fmt.Errorf("drive upload: name is required")
 	}
@@ -179,7 +186,7 @@ func (d *Drive) Upload(ctx context.Context, parentID, name, mimeType string, con
 		meta.MimeType = mimeType
 	}
 	f, err := d.svc.Files.Create(meta).
-		Media(bytes.NewReader(content)).
+		Media(r, googleapi.ChunkSize(16<<20)).
 		Fields("id,name,mimeType,size,modifiedTime").
 		SupportsAllDrives(true).
 		Context(ctx).Do()

@@ -173,7 +173,7 @@ func (c *Courier) deliver(ctx context.Context, messageID string, known []Project
 
 	project, candidates := MatchProject(msg.Subject, msg.Body, msg.From, known)
 	d.Project, d.Candidates = project.Name, candidates
-	d.Folder = deliveryFolder(project.Name, msg.Subject, msg.Date)
+	d.Folder = deliveryFolder(c.registry.Folder(), project.Name, msg.Subject, msg.Date)
 
 	folderID, err := c.drive.EnsurePath(ctx, d.Folder)
 	if err != nil {
@@ -246,7 +246,7 @@ func keepDocuments(attachments []gworkspace.Attachment) []gworkspace.Attachment 
 // deliveryFolder is "<Проект>/99_Переписка/ГГГГ-ММ-ДД_тема", or the unsorted
 // folder when no project was recognised. One batch per letter: a later pass
 // never mixes new documents into an already reviewed folder.
-func deliveryFolder(project, subject, date string) string {
+func deliveryFolder(projectsFolder, project, subject, date string) string {
 	day := time.Now().Format("2006-01-02")
 	if t, err := time.Parse(time.RFC3339, date); err == nil {
 		day = t.Format("2006-01-02")
@@ -254,6 +254,9 @@ func deliveryFolder(project, subject, date string) string {
 	leaf := day + "_" + sanitizeSegment(subject)
 	if project == "" {
 		return UnsortedFolder + "/" + leaf
+	}
+	if projectsFolder != "" {
+		project = projectsFolder + "/" + project
 	}
 	return project + "/" + CorrespondenceFolder + "/" + leaf
 }

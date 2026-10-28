@@ -43,7 +43,7 @@ def convert_dwg(path: str, workdir: str) -> str:
     out = os.path.join(workdir, os.path.basename(path) + ".dxf")
     proc = subprocess.run(
         ["dwg2dxf", "-o", out, path],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, errors="replace", timeout=600,
     )
     # LibreDWG ругается на неподдерживаемые поля (DIMASSOC и подобные), но файл
     # при этом отдаёт — ориентируемся на результат, а не на код возврата.

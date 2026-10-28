@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/subagent"
@@ -58,10 +59,22 @@ const coordinatorSystemPrompt = `Ты — ведущий юрист-коорди
         Документы: TextPart стр. 4–5; РнС стр. 5
         Вывод: расхождение требует устранения.»
    Цель — чтобы текст читался как обычное сообщение, без сырой Markdown-разметки.
-8. ИСТОЧНИК НОРМ. Ссылайся на статью или пункт нормы ТОЛЬКО если его текст есть в разделе «ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ» во входе или получен инструментом norm_search (lookup: doc_code + ref, например doc_code="ГрК РФ", ref="ст. 49 ч. 2"; search: запрос по смыслу; docs: что загружено). Если норма нужна для вывода, а в выдержках её нет — СНАЧАЛА вызови norm_search и процитируй полученный текст. Только если инструмент ничего не вернул — пиши «текст нормы не загружен в базу, требует проверки» и НЕ цитируй и не пересказывай норму по памяти. Оглавление нормативной базы ниже — только карта, а не текст для цитирования.
-9. ПСЕВДОДОКУМЕНТЫ ВО ВХОДЕ. «ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ» — это вопрос, на который отчёт обязан ответить в первую очередь. «АВТОСВЕРКА» — детерминированное сравнение извлечённых чисел (ТЭП, кадастровые номера, адреса), сделанное программой: считай его проверенным фактом, приводи его строки 🔴 как замечания, а при расхождении с твоим прочтением выжимок — укажи оба значения и пометь «требует проверки оригинала».`
+8. ИСТОЧНИК НОРМ. Ссылайся на статью или пункт нормы ТОЛЬКО если его текст есть в разделе «ВЫДЕРЖКИ ИЗ НОРМАТИВНОЙ БАЗЫ» во входе или получен инструментом norm_search (lookup: doc_code + ref, например doc_code="ГрК РФ", ref="ст. 49 ч. 2"; search: запрос по смыслу; docs: что загружено). Если норма нужна для вывода, а в выдержках её нет — СНАЧАЛА вызови norm_search и процитируй полученный текст. Только если инструмент ничего не вернул — пиши «текст нормы не загружен в базу, требует проверки» и НЕ цитируй и не пересказывай норму по памяти. Оглавление нормативной базы ниже — только карта, а не текст для цитирования. НЕ ДЕЛАЙ ОТДЕЛЬНОГО РАЗДЕЛА С ТЕКСТАМИ НОРМ в начале отчёта: норма приводится внутри того замечания, к которому относится, одной цитатой по делу. Бюджет отчёта уходит на замечания, а не на пересказ кодекса. ЦИТИРУЙ УСЛОВИЕ ЦЕЛИКОМ: если у предельного параметра есть оговорка, для каких объектов или случаев он действует («... 2000 кв. м для складских объектов; для объектов иного назначения не устанавливается»), приводи её в той же фразе. Обрезанная цитата, из которой пропала оговорка, — это ложное замечание, а не краткость.
+9. ПСЕВДОДОКУМЕНТЫ ВО ВХОДЕ. «ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ» — это вопрос, на который отчёт обязан ответить в первую очередь. «КОНТЕКСТ ПЕРЕПИСКИ» — последние сообщения чата перед запросом: из них бери, что именно случилось с объектом (пришла приостановка, отказ, требование), какие сроки и что пользователь уже пробовал; отвечай с учётом этого, но не считай слова из переписки фактами документов — факты только из выжимок. «АВТОСВЕРКА» — детерминированное сравнение извлечённых чисел (ТЭП, кадастровые номера, адреса), сделанное программой: считай его проверенным фактом, приводи его строки 🔴 как замечания, а при расхождении с твоим прочтением выжимок — укажи оба значения и пометь «требует проверки оригинала». «СОСТАВ ПАКЕТА» — полный перечень документов пачки и их статус, составленный программой: ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК ТОГО, ЧТО ПРОЧИТАНО. Объявлять документ непрочитанным можно ТОЛЬКО если он помечен «НЕ прочитан» в этом перечне. Если документ помечен «прочитан», а его фактов в выжимках перед тобой нет, пиши «данные документа не вошли в сводку, вывод по нему не делался» — это НЕ то же самое, что «не прочитан», и путать их нельзя. НЕ ПРИПИСЫВАЙ АВТОСВЕРКЕ ТО, ЧЕГО В ЕЁ БЛОКЕ НЕТ: ссылаться на неё можно только дословно по её строкам. Если документ перечислен в «В АВТОСВЕРКЕ НЕ УЧАСТВУЮТ», его числа программой не сверены — бери их только из его выжимки и так и пиши.
 
-const coordinatorMaxTokens = 8192
+10. НИ ОДНОГО ЧИСЛА ИЗ ГОЛОВЫ. Каждый кадастровый номер, площадь, объём и высота в отчёте должны стоять в выжимке, в блоке АВТОСВЕРКИ или в процитированной норме. Если значения нет ни там, ни там — не пиши его вообще; написать «в томе не указана площадь участка» правильно, придумать её — брак. Программа сверяет числа отчёта с источниками и выносит неподтверждённые в отдельный раздел.`
+
+// coordinatorMaxTokens is the report budget. At 8192 a real batch spent it on
+// verbatim norm quotes and stopped at the third finding out of nineteen.
+const coordinatorMaxTokens = 32000
+
+// reduceMaxTokens is the compressor's own budget. It must stay small: the
+// reduce pass runs per group on the cheap model, and a 32k answer there takes
+// longer than the HTTP timeout allows.
+const reduceMaxTokens = 8192
+
+// truncationNotice heads a report the model did not get to finish.
+const truncationNotice = "⚠️ ЗАКЛЮЧЕНИЕ ОБРЕЗАНО ПО ЛИМИТУ ВЫВОДА: часть замечаний в текст не попала. Ниже — только то, что модель успела написать; пакет проверен НЕ полностью.\n\n"
 
 // defaultCoordinatorBudget — фолбэк бюджета входа в токенах (~40% окна 200K),
 // если вызвали с непозитивным бюджетом. Стережёт от случайного 0.
@@ -116,7 +129,12 @@ func (c *Coordinator) SetTools(names ...string) { c.tools = names }
 
 // coordinatorMaxTurns bounds the tool loop: enough for a handful of lookups,
 // the final turn is forced to be text by the runner.
-const coordinatorMaxTurns = 8
+const coordinatorMaxTurns = 16
+
+// finalPushTask is asked when the tool loop ends without a report: the model
+// spent every turn looking norms up and never wrote the conclusion. An hour of
+// digesting must not be lost to that.
+const finalPushTask = "\n\nБЮДЖЕТ ПОИСКА ПО НОРМАМ ИСЧЕРПАН. Больше ничего не ищи и не запрашивай. Напиши итоговое заключение ПРЯМО СЕЙЧАС по тем данным, которые уже приведены выше. Для норм, текст которых получить не удалось, пиши «текст нормы не загружен в базу, требует проверки» и не цитируй их по памяти."
 
 // systemPrompt — стабильный кэш-префикс: инструкция координатора + нормативная
 // база. Адаптер OpenRouter кэширует системный префикс (Anthropic prompt cache).
@@ -127,22 +145,41 @@ func (c *Coordinator) systemPrompt() string {
 	return coordinatorSystemPrompt + "\n\n## НОРМАТИВНАЯ БАЗА\n" + c.normativy
 }
 
+// Conclusion is the coordinator's report together with everything it read on
+// top of the digests: the normative excerpts and whatever norm_search
+// returned. The verifier needs that full corpus — a quantity quoted from a
+// norm the model fetched mid-run is backed, even though no digest holds it.
+type Conclusion struct {
+	Report   string
+	Evidence []string
+}
+
 // Review сводит выжимки в отчёт. Пустой вход или пустой ответ модели — ошибка.
-func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, error) {
+func (c *Coordinator) Review(ctx context.Context, digests []Digest) (Conclusion, error) {
 	if len(digests) == 0 {
-		return "", fmt.Errorf("coordinator: no digests to review")
+		return Conclusion{}, fmt.Errorf("coordinator: no digests to review")
 	}
 	sys := c.systemPrompt()
 
-	fitted, err := c.fitToBudget(ctx, sys, digests)
+	// Program-built blocks are small, authoritative and must reach the model
+	// word for word: compressing them is how a run lost the key document and
+	// then reported read files as unread.
+	kept, compressible := splitProgramBlocks(digests)
+	fitted, err := c.fitToBudget(ctx, sys, compressible)
 	if err != nil {
-		return "", err
+		return Conclusion{}, err
 	}
+	fitted = append(kept, fitted...)
 
 	body := formatDigests(fitted)
 	if excerpts := c.excerpts(ctx, sys, fitted, body); excerpts != "" {
 		body = excerptsHeader + excerpts + "\n\n" + body
 	}
+	// The body is the evidence the model starts from; tool results are added
+	// as they arrive below.
+	evidence := []string{body}
+	var mu sync.Mutex
+	var lastFinish string
 	start := time.Now()
 	slog.Info("legalreview coordinator start",
 		"model", c.model,
@@ -156,21 +193,50 @@ func (c *Coordinator) Review(ctx context.Context, digests []Digest) (string, err
 		MaxTurns:     1,
 		Temperature:  0,
 		MaxTokens:    coordinatorMaxTokens,
+		OnFinishReason: func(reason string) {
+			mu.Lock()
+			defer mu.Unlock()
+			lastFinish = reason
+		},
 	}
 	if len(c.tools) > 0 {
 		cfg.ToolNames = c.tools
 		cfg.MaxTurns = coordinatorMaxTurns
+		cfg.OnToolResult = func(_, result string) {
+			mu.Lock()
+			defer mu.Unlock()
+			evidence = append(evidence, result)
+		}
 	}
 	out, err := c.runner.Run(ctx, cfg, body)
+	if len(c.tools) > 0 && (err != nil || strings.TrimSpace(out) == "") {
+		// The tool loop ended without a conclusion. Ask once more with the
+		// tools withdrawn, so the only thing left to produce is the report.
+		slog.Warn("legalreview coordinator: no report after the tool loop, asking again without tools",
+			"model", c.model, "error", err)
+		retry := cfg
+		retry.ToolNames = nil
+		retry.MaxTurns = 1
+		retry.OnToolResult = nil
+		out, err = c.runner.Run(ctx, retry, body+finalPushTask)
+	}
 	if err != nil {
-		return "", fmt.Errorf("coordinator review: %w", err)
+		return Conclusion{}, fmt.Errorf("coordinator review: %w", err)
 	}
 	if strings.TrimSpace(out) == "" {
-		return "", fmt.Errorf("coordinator: empty report")
+		return Conclusion{}, fmt.Errorf("coordinator: empty report")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastFinish == "length" {
+		slog.Warn("legalreview coordinator: report cut off by the output cap",
+			"model", c.model, "max_tokens", coordinatorMaxTokens, "report_chars", len(out))
+		out = truncationNotice + out
 	}
 	slog.Info("legalreview coordinator done",
-		"model", c.model, "report_chars", len(out), "ms", time.Since(start).Milliseconds())
-	return out, nil
+		"model", c.model, "report_chars", len(out),
+		"evidence_parts", len(evidence), "ms", time.Since(start).Milliseconds())
+	return Conclusion{Report: out, Evidence: evidence}, nil
 }
 
 // excerpts fetches the normative text the fitted digests may cite. Excerpts
@@ -213,7 +279,7 @@ func (c *Coordinator) excerpts(ctx context.Context, sys string, fitted []Digest,
 	return out
 }
 
-const reduceSystemPrompt = `Ты сжимаешь группу выжимок документов в ОДНУ компактную выжимку для последующей юридической проверки. Сохрани ВСЕ юридически значимые факты с дословными цитатами и ссылками «(файл X, стр. N)». Не делай юридических выводов. Не теряй данные — только убирай дублирование и воду. Формат: список фактов с цитатами и привязкой к файлу/странице.`
+const reduceSystemPrompt = `Ты сжимаешь группу выжимок документов в ОДНУ компактную выжимку для последующей юридической проверки. Сохрани ВСЕ юридически значимые факты с дословными цитатами и ссылками «(файл X, стр. N)». Не делай юридических выводов. Не теряй данные — только убирай дублирование и воду. Формат: сначала строка «ФАЙЛЫ В БЛОКЕ:» с перечнем всех файлов группы через точку с запятой, затем список фактов с цитатами и привязкой к файлу/странице. НИ ОДИН ФАЙЛ НЕ ДОЛЖЕН ПРОПАСТЬ: если по файлу значимых фактов нет, всё равно оставь строку «файл X — значимых фактов не выявлено».`
 
 // fitToBudget ужимает выжимки под бюджет координатора. Пока вход (системный
 // промпт + выжимки) превышает бюджет и есть что группировать — гоняем дешёвый
@@ -269,7 +335,7 @@ func (c *Coordinator) reducePass(ctx context.Context, digests []Digest) ([]Diges
 			SystemPrompt: reduceSystemPrompt,
 			MaxTurns:     1,
 			Temperature:  0,
-			MaxTokens:    coordinatorMaxTokens,
+			MaxTokens:    reduceMaxTokens,
 		}
 		text, err := c.runner.Run(ctx, cfg, formatDigests(g))
 		if err != nil {
@@ -313,4 +379,19 @@ func groupLabel(g []Digest) string {
 		paths[i] = d.Path
 	}
 	return strings.Join(paths, ", ")
+}
+
+// splitProgramBlocks separates what the program wrote from what the documents
+// said. The first group goes to the coordinator untouched; only the second is
+// ever handed to the compressor.
+func splitProgramBlocks(digests []Digest) (program, documents []Digest) {
+	for _, d := range digests {
+		switch d.Path {
+		case ManifestDigestPath, CollisionsDigestPath, FocusDigestPath, ContextDigestPath:
+			program = append(program, d)
+		default:
+			documents = append(documents, d)
+		}
+	}
+	return program, documents
 }

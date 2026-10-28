@@ -118,3 +118,65 @@ func TestGenerateImageEditsWhenAPhotoIsAttachedEvenWithoutTheFlag(t *testing.T) 
 		t.Error("drew a new image instead of editing the attached photo")
 	}
 }
+
+func TestGenerateImageCombinesFreshPhotoBatch(t *testing.T) {
+	gen, comp := &fakeImageGen{}, &fakeComposer{}
+	tool := builtin.NewGenerateImage(gen).WithComposer(comp)
+	used := false
+	ctx := imgctx.WithSink(context.Background(), &imgctx.Sink{})
+	ctx = imgctx.WithCurrent(ctx, "/refs/girl.jpg")
+	ctx = imgctx.WithRefs(ctx, imgctx.Refs{Images: []string{"/refs/men.jpg", "/refs/girl.jpg"}, Used: func() { used = true }})
+
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"prompt":"put them together"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gen.editedPath != "" {
+		t.Fatalf("edited only %q, the men photo was dropped", gen.editedPath)
+	}
+	if len(comp.paths) != 2 || comp.paths[0] != "/refs/men.jpg" || !strings.Contains(comp.prompt, "[Image 2]") {
+		t.Fatalf("composed %v with %q", comp.paths, comp.prompt)
+	}
+	if !used {
+		t.Fatal("reference set not marked used")
+	}
+}
+
+func TestGenerateImageUsesExplicitNumbersOverLastResult(t *testing.T) {
+	gen, comp := &fakeImageGen{}, &fakeComposer{}
+	tool := builtin.NewGenerateImage(gen).WithComposer(comp)
+	ctx := imgctx.WithSink(context.Background(), &imgctx.Sink{})
+	// The last generated picture is current; the user re-sent a photo and asks again.
+	ctx = imgctx.WithCurrent(ctx, "/files/previous.png")
+	ctx = imgctx.WithRefs(ctx, imgctx.Refs{Images: []string{"/refs/men.jpg", "/refs/girl.jpg", "/refs/men2.jpg"}})
+
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"prompt":"again","images":[3,2]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(comp.paths) != 2 || comp.paths[0] != "/refs/men2.jpg" || comp.paths[1] != "/refs/girl.jpg" {
+		t.Fatalf("composed %v", comp.paths)
+	}
+}
+
+func TestGenerateImageFollowUpEditsLastResult(t *testing.T) {
+	gen, comp := &fakeImageGen{}, &fakeComposer{}
+	tool := builtin.NewGenerateImage(gen).WithComposer(comp)
+	ctx := imgctx.WithSink(context.Background(), &imgctx.Sink{})
+	ctx = imgctx.WithCurrent(ctx, "/files/previous.png")
+	ctx = imgctx.WithRefs(ctx, imgctx.Refs{Images: []string{"/refs/men.jpg", "/refs/girl.jpg"}})
+
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"prompt":"make the hat red"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gen.editedPath != "/files/previous.png" || comp.paths != nil {
+		t.Fatalf("edited %q, composed %v", gen.editedPath, comp.paths)
+	}
+}
+
+func TestGenerateImageRejectsUnknownNumber(t *testing.T) {
+	tool := builtin.NewGenerateImage(&fakeImageGen{}).WithComposer(&fakeComposer{})
+	ctx := imgctx.WithSink(context.Background(), &imgctx.Sink{})
+	ctx = imgctx.WithRefs(ctx, imgctx.Refs{Images: []string{"/refs/a.jpg"}})
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"prompt":"x","images":[2]}`)); err == nil {
+		t.Fatal("expected an error for [Image 2]")
+	}
+}

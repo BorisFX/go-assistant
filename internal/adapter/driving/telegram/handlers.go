@@ -39,6 +39,12 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		return
 	}
 
+	// Album items arrive milliseconds apart; the debouncer would drop all but
+	// the first, so media is collected before it.
+	if b.handleMediaMessage(update.Message) {
+		return
+	}
+
 	if !b.debouncer.Allow(update.Message.Chat.ID) {
 		return
 	}
@@ -150,7 +156,8 @@ func (b *Bot) sendFile(chatID int64, filePath, caption string) {
 }
 
 func (b *Bot) handleVoiceMessage(msg *tgbotapi.Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Spoken requests now also describe pictures and videos, which run as long as typed ones.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	chatID := msg.Chat.ID
@@ -183,6 +190,11 @@ func (b *Bot) handleVoiceMessage(msg *tgbotapi.Message) {
 
 	stream.UpdateDraft("Processing: " + truncate(transcribeResult, 50) + "...")
 
+	if b.media != nil {
+		b.processWithMedia(ctx, stream, chatID, msg.From.ID, transcribeResult)
+		return
+	}
+
 	// Process transcribed text through pipeline
 	sessionKey := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID))
 	resp, err := b.chatService.ProcessMessage(ctx, input.ChatRequest{
@@ -199,8 +211,13 @@ func (b *Bot) handleVoiceMessage(msg *tgbotapi.Message) {
 	stream.SendChunked(resp.Content)
 }
 
+// documentTimeout bounds one document analysis. Reading a multi-sheet drawing
+// album is a dozen-plus tool calls, and 2 minutes cut those runs off mid-way:
+// the answer was dropped, and with it everything the model had already read.
+const documentTimeout = 10 * time.Minute
+
 func (b *Bot) handleDocumentMessage(msg *tgbotapi.Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), documentTimeout)
 	defer cancel()
 
 	chatID := msg.Chat.ID
@@ -278,12 +295,26 @@ func (b *Bot) handleDocumentMessage(msg *tgbotapi.Message) {
 	})
 
 	if err != nil {
-		stream.Finalize("Error: " + err.Error())
+		slog.Error("document analysis failed", "file", msg.Document.FileName, "error", err)
+		stream.Finalize(documentErrorText(err))
 		return
 	}
 
 	stream.SendChunked(resp.Content)
 	b.sendGeneratedImages(chatID, msg.From.ID, produced)
+}
+
+// documentErrorText explains a dropped analysis in plain Russian. A timeout is
+// not "Error: context deadline exceeded" to whoever sent the file — it means
+// the document was never read, and the next answer must not pretend otherwise.
+func documentErrorText(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf(
+			"Не успел разобрать документ за %d минут — ответ не готов, документ считаю непрочитанным.\n\n"+
+				"Попроси разобрать его отдельно (например: \"прочитай лист 9 из <файл>\") или пришли нужные листы по частям.",
+			int(documentTimeout.Minutes()))
+	}
+	return "Error: " + err.Error()
 }
 
 func (b *Bot) handlePhotoMessage(msg *tgbotapi.Message) {
@@ -483,6 +514,11 @@ func (b *Bot) handleTextMessage(msg *tgbotapi.Message) {
 	stream := NewDraftStream(b.api, chatID, b.streamMode)
 	stream.SendDraft("Thinking...")
 
+	if b.media != nil {
+		b.processWithMedia(ctx, stream, chatID, msg.From.ID, b.enrichContent(msg))
+		return
+	}
+
 	sessionKey := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID))
 
 	ctx, images := b.withImages(ctx, msg.From.ID, "")
@@ -527,38 +563,67 @@ func (b *Bot) collectFolder(ctx context.Context, folder string) ([]string, error
 	return nil, errors.Join(errs...)
 }
 
+// reviewTimeout bounds one review run. A 40-document batch with multi-batch
+// digests takes ~25 minutes of worker calls before the coordinator even
+// starts, so 30 minutes was cutting real runs off.
+const reviewTimeout = 60 * time.Minute
+
 // handleLegalReview runs the "разбери папку X" intent: collect the folder from
 // Drive or Mail.ru, orchestrate per-document digests, then a premium
 // coordinator review. The result is delivered as a client-grade PDF (with a
 // short text preview), stored next to the documents and recorded as a run.
 func (b *Bot) handleLegalReview(msg *tgbotapi.Message, folder, focus string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), reviewTimeout)
 	defer cancel()
 
 	chatID := msg.Chat.ID
 	started := time.Now()
 	slog.Info("legalreview request", "folder", folder, "focus", focus != "", "chat_id", chatID)
-	b.sendText(chatID, fmt.Sprintf("Собираю папку «%s»…", folder))
+	// One live message from here to the report: collecting a big folder from
+	// Drive already takes a minute, and the run itself takes the better part
+	// of an hour.
+	progress := newReviewProgress(NewDraftStream(b.api, chatID, StreamProgress), folder)
+	defer progress.Done()
 
 	paths, err := b.collectFolder(ctx, folder)
 	if err != nil {
 		// Collect errors are user-meaningful (e.g. the maxFiles guard message).
 		slog.Warn("legalreview collect failed", "folder", folder, "error", err)
+		progress.Done()
 		b.sendText(chatID, err.Error())
 		return
 	}
 	slog.Info("legalreview collected", "folder", folder, "files", len(paths))
 
-	b.runReview(ctx, chatID, folder, paths, focus, started)
+	b.runReviewWithProgress(ctx, msg, folder, paths, focus, started, progress)
 }
 
 // runReview is the shared tail of every review trigger (a folder in storage or
 // a file sent to the chat): analyse, preview the findings as text, deliver the
 // PDF, persist the run.
-func (b *Bot) runReview(ctx context.Context, chatID int64, label string, paths []string, focus string, started time.Time) {
-	b.sendText(chatID, fmt.Sprintf("Анализирую %d документов…", len(paths)))
+// runReview starts its own progress message; callers that already have one
+// (the folder intent, which reports collection too) use runReviewWithProgress.
+func (b *Bot) runReview(ctx context.Context, msg *tgbotapi.Message, label string, paths []string, focus string, started time.Time) {
+	progress := newReviewProgress(NewDraftStream(b.api, msg.Chat.ID, StreamProgress), label)
+	defer progress.Done()
+	b.runReviewWithProgress(ctx, msg, label, paths, focus, started, progress)
+}
 
-	res, err := b.legalReview.orch.ReviewRequest(ctx, legalreview.ReviewRequest{Paths: paths, Focus: focus})
+func (b *Bot) runReviewWithProgress(ctx context.Context, msg *tgbotapi.Message, label string, paths []string, focus string, started time.Time, progress *reviewProgress) {
+	chatID := msg.Chat.ID
+
+	// The same session the chat pipeline uses, so the review sees what was
+	// discussed and the chat later sees what the review concluded.
+	sessionID := valueobject.NewSessionKey("telegram", fmt.Sprintf("dm:%d", msg.From.ID)).String()
+	chatContext := b.legalReview.history.Context(ctx, sessionID)
+
+	res, err := b.legalReview.orch.ReviewRequest(ctx, legalreview.ReviewRequest{
+		Paths:      paths,
+		Focus:      focus,
+		Context:    chatContext,
+		OnProgress: progress.Handle,
+	})
+	progress.Done()
 	if err != nil {
 		slog.Error("legalreview failed", "folder", label, "error", err)
 		b.sendText(chatID, "Не удалось провести ревью: "+err.Error())
@@ -572,6 +637,8 @@ func (b *Bot) runReview(ctx context.Context, chatID int64, label string, paths [
 		Focus:         focus,
 		Files:         files,
 		Report:        res.Report,
+		CrossCheck:    res.CrossCheck,
+		Unverified:    res.Unverified,
 		NormativyHash: b.legalReview.normativyHash,
 		StartedAt:     started,
 		FinishedAt:    time.Now(),
@@ -579,7 +646,14 @@ func (b *Bot) runReview(ctx context.Context, chatID int64, label string, paths [
 	run.Models = b.legalReview.models
 
 	// Findings first, as text: Yuri reads them on the phone before the PDF.
-	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(reportPreview(res.Report))
+	preview := reportPreview(res.Report)
+	if warn := legalreview.RenderUnverified(res.Unverified); warn != "" {
+		// The phone is where the findings are read and acted on, so the
+		// numbers nothing backs have to be visible there, not only in the PDF.
+		preview += "\n\n" + warn
+	}
+	NewDraftStream(b.api, chatID, b.streamMode).SendChunked(preview)
+	b.legalReview.history.Remember(ctx, sessionID, reviewAskText(msg), preview)
 
 	b.deliverReport(ctx, chatID, &run)
 	slog.Info("legalreview delivered",
@@ -591,17 +665,29 @@ func (b *Bot) runReview(ctx context.Context, chatID int64, label string, paths [
 // a «разбери …» caption. Long-running, so it gets its own deadline instead of
 // the short one the ordinary document handler uses.
 func (b *Bot) handleDocumentReview(msg *tgbotapi.Message, localPath, focus string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), reviewTimeout)
 	defer cancel()
 
 	started := time.Now()
 	label := "файл " + msg.Document.FileName
 	slog.Info("legalreview request", "file", msg.Document.FileName, "focus", focus != "", "chat_id", msg.Chat.ID)
-	b.runReview(ctx, msg.Chat.ID, label, []string{localPath}, focus, started)
+	b.runReview(ctx, msg, label, []string{localPath}, focus, started)
 }
 
 // reportPreviewChars bounds the text preview; the full report is in the PDF.
 const reportPreviewChars = 3000
+
+// reviewAskText is what the review request looks like in chat history: the
+// typed trigger, or the file name for a captioned document.
+func reviewAskText(msg *tgbotapi.Message) string {
+	if msg.Text != "" {
+		return msg.Text
+	}
+	if msg.Document != nil {
+		return msg.Caption + " [файл " + msg.Document.FileName + "]"
+	}
+	return msg.Caption
+}
 
 func reportPreview(report string) string {
 	r := []rune(report)

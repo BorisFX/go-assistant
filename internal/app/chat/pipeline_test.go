@@ -20,10 +20,10 @@ type stubTool struct {
 	err    error
 }
 
-func (t *stubTool) Name() string                { return t.name }
-func (t *stubTool) Description() string         { return "stub" }
-func (t *stubTool) Category() string            { return "test" }
-func (t *stubTool) Schema() json.RawMessage     { return json.RawMessage(`{"type":"object"}`) }
+func (t *stubTool) Name() string            { return t.name }
+func (t *stubTool) Description() string     { return "stub" }
+func (t *stubTool) Category() string        { return "test" }
+func (t *stubTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *stubTool) Execute(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 	if t.err != nil {
 		return nil, t.err

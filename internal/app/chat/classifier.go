@@ -30,6 +30,9 @@ func NewRuleClassifier() *RuleClassifier {
 	// Recall of earlier conversations goes through a tool, not through psql in bash.
 	c.addRule(`(?i)(мы (уже )?обсуждали|в прошл\w+ раз|напомни, что|история (переписки|диалога)|найди в переписке|что я говорил)`, valueobject.RouteTool, []string{"search_history"}, 0.9)
 	c.addRule(`(?i)(напиши код|write code|поправь код|fix code|баг|bug|рефактор|refactor|implement|реализуй)`, valueobject.RouteCode, nil, 0.95)
+	// Gas Town's Mayor is reached through the mayor-msg command in bash.
+	c.addRule(`(?i)(мэр\w*|mayor|гастаун\w*|gas ?town|полекат\w*)`, valueobject.RouteTool, []string{"bash"}, 0.95)
+	c.addRule(`(?i)(вол[ь]?т\w*|obsidian|обсидиан\w*|заметк\w*|в заметки|vault)`, valueobject.RouteTool, []string{"obsidian"}, 0.95)
 	c.addRule(`(?i)(nginx|сервер|server|конфиг|config|деплой|deploy|перезапусти|restart|systemctl)`, valueobject.RouteTool, []string{"bash"}, 0.95)
 	c.addRule(`(?i)(облак|cloud|mail\.ru|объект|обьект|документ|выписк|егрн|скачай|download|прочитай|смета|акт КС|договор подряд|кс-2|кс-3|разрешен\w+ на строит|мебель|склад\b|магазин|гараж|участок|строительств|проанализируй|анализ|подпис|\.sig\b|сертификат|чертеж|чертёж|pdf|техплан|техническ\w+ план|кадастр)`, valueobject.RouteTool, []string{"drive_files", "projects", "cloud_files", "read_pdf", "inspect_signature", "bash"}, 0.95)
 	// Norm citations. A question naming a law, a пункт or a СП must reach the
@@ -53,6 +56,8 @@ func NewRuleClassifier() *RuleClassifier {
 	// Drawing and photo editing. Instances without an llm.image block have no
 	// generate_image tool, and the registry drops the name.
 	c.addRule(`(?i)(нарисуй|рисуй|нарисов|сгенерируй картинк|сгенерируй изображен|сделай картинк|сделай мем|картинк\w*|изображени\w*|фотк\w*|фотограф\w*|на фото|отредактируй|отфотошоп|фотошоп|draw|generate an? image|edit (the )?(photo|image|picture)|paint)`, valueobject.RouteTool, []string{"generate_image"}, 0.9)
+	// Video clips. Pictures sent beforehand are references, so the image tool rides along.
+	c.addRule(`(?i)(видос\w*|видео\w*|ролик\w*|клип\w*|анимаци\w*|анимируй|оживи|гифк\w*|\bvideo\b|\bclip\b|animate)`, valueobject.RouteTool, []string{"generate_video", "generate_image"}, 0.9)
 	c.addRule(`(?i)(привет|hello|здравствуй|добрый день|добрый вечер|доброе утро|good morning|good evening)`, valueobject.RouteChat, nil, 0.9)
 
 	return c
@@ -84,6 +89,12 @@ const stickyLimit = 4
 // оставляет инструменты под рукой.
 func (c *RuleClassifier) ClassifyWithContext(text string, history []string) (valueobject.Route, []string, float64) {
 	route, tools, confidence := c.Classify(text)
+
+	// No hit means "every tool". Narrowing such a message to whatever the last
+	// turns needed (say, video and search) hides bash, obsidian and the rest.
+	if len(tools) == 0 {
+		return route, tools, confidence
+	}
 
 	seen := make(map[string]bool, len(tools))
 	for _, t := range tools {

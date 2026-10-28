@@ -34,7 +34,11 @@ type Run struct {
 	Focus  string
 	Files  []FileInfo
 	Report string // coordinator output
-	Models struct {
+	// CrossCheck is the deterministic comparison, printed verbatim.
+	CrossCheck string
+	// Unverified are the report's numbers no source backs.
+	Unverified []Unverified
+	Models     struct {
 		Digest      string
 		Coordinator string
 	}
@@ -112,7 +116,8 @@ const limitationsText = `- Проверка выполнена автомати�
 - Электронные подписи (.sig) прочитаны в части сведений о подписантах; криптографическая проверка подписи, срока действия и цепочки сертификатов не выполнялась.
 - Ссылки на нормативные акты приводятся только по загруженной нормативной базе; пункты, отсутствующие в базе, помечены как требующие проверки по актуальной редакции.
 - Документы со статусом «не прочитан» в оценке не участвовали: вывод по ним невозможен.
-- Данные, извлечённые из сканов и чертежей средствами распознавания, могут содержать ошибки распознавания и подлежат сверке с оригиналом.`
+- Данные, извлечённые из сканов и чертежей средствами распознавания, могут содержать ошибки распознавания и подлежат сверке с оригиналом.
+- Числа и кадастровые номера заключения сверены программой с текстами выжимок и процитированных норм; непрошедшие сверку вынесены в раздел «ПРОВЕРКА ЧИСЕЛ ЗАКЛЮЧЕНИЯ» и подлежат проверке по оригиналу до использования.`
 
 // BuildReportMarkdown renders a run as the client-facing paper. Everything
 // numeric comes from the run itself; the model's text is carried verbatim in
@@ -161,6 +166,18 @@ func BuildReportMarkdown(run Run) string {
 			i+1, f.Name, formatBytes(f.Bytes), method, status, sum)
 	}
 	fmt.Fprintf(&b, "\nВсего документов: %d, прочитано: %d, не прочитано: %d.\n\n", len(run.Files), read, unread)
+
+	// The machine-checked blocks come first: what the program compared itself,
+	// then what it could not confirm in the model's text, and only then the
+	// model's narrative.
+	if cc := strings.TrimSpace(run.CrossCheck); cc != "" {
+		b.WriteString("## " + collisionsTitle + " (выполнена программой)\n\n")
+		b.WriteString("```\n" + cc + "\n```\n\n")
+	}
+	if warn := RenderUnverified(run.Unverified); warn != "" {
+		b.WriteString("## ПРОВЕРКА ЧИСЕЛ ЗАКЛЮЧЕНИЯ\n\n")
+		b.WriteString("```\n" + warn + "\n```\n\n")
+	}
 
 	b.WriteString("## РЕЗУЛЬТАТЫ ПРОВЕРКИ\n\n")
 	b.WriteString(strings.TrimSpace(run.Report))

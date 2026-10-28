@@ -3,6 +3,8 @@ package legalreview
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,11 +34,14 @@ func (f *fakeExtractor) Extract(_ context.Context, path string) (extraction.Resu
 // fakeDigester turns a Result into a Digest echoing the path; can error per path.
 type fakeDigester struct {
 	errs     map[string]error
+	partial  map[string]bool
+	calls    int32
 	inFlight int32
 	maxSeen  int32
 }
 
 func (f *fakeDigester) Digest(_ context.Context, doc extraction.Result) (Digest, error) {
+	atomic.AddInt32(&f.calls, 1)
 	n := atomic.AddInt32(&f.inFlight, 1)
 	for {
 		old := atomic.LoadInt32(&f.maxSeen)
@@ -49,30 +54,49 @@ func (f *fakeDigester) Digest(_ context.Context, doc extraction.Result) (Digest,
 	if err := f.errs[doc.Path]; err != nil {
 		return Digest{}, err
 	}
-	return Digest{Path: doc.Path, Method: doc.Method, Text: "digest of " + doc.Path}, nil
+	return Digest{Path: doc.Path, Method: doc.Method, Text: "digest of " + doc.Path, Partial: f.partial[doc.Path]}, nil
 }
 
 // fakeReviewer records the digests it received and returns a fixed report.
 type fakeReviewer struct {
-	mu     sync.Mutex
-	got    []Digest
-	called bool
-	report string
-	err    error
+	mu       sync.Mutex
+	got      []Digest
+	called   bool
+	report   string
+	evidence []string
+	err      error
 }
 
-func (f *fakeReviewer) Review(_ context.Context, digests []Digest) (string, error) {
+func (f *fakeReviewer) Review(_ context.Context, digests []Digest) (Conclusion, error) {
 	f.mu.Lock()
 	f.called = true
 	f.got = digests
 	f.mu.Unlock()
 	if f.err != nil {
-		return "", f.err
+		return Conclusion{}, f.err
 	}
 	if f.report == "" {
-		return "ОТЧЁТ", nil
+		return Conclusion{Report: "ОТЧЁТ"}, nil
 	}
-	return f.report, nil
+	return Conclusion{Report: f.report, Evidence: f.evidence}, nil
+}
+
+// docsOnly drops the program-built blocks (manifest, cross-check, focus,
+// context) so a test can assert about the documents themselves.
+func docsOnly(got []Digest) []Digest {
+	pseudo := map[string]bool{
+		ManifestDigestPath:   true,
+		CollisionsDigestPath: true,
+		FocusDigestPath:      true,
+		ContextDigestPath:    true,
+	}
+	var out []Digest
+	for _, d := range got {
+		if !pseudo[d.Path] {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func TestOrchestrator_EmptyPathsErrors(t *testing.T) {
@@ -94,12 +118,13 @@ func TestOrchestrator_HappyPathPreservesOrder(t *testing.T) {
 	if report != "ИТОГ" {
 		t.Fatalf("want coordinator report, got %q", report)
 	}
-	if len(rev.got) != 3 {
-		t.Fatalf("want 3 digests, got %d", len(rev.got))
+	docs := docsOnly(rev.got)
+	if len(docs) != 3 {
+		t.Fatalf("want 3 digests, got %d", len(docs))
 	}
 	for i, p := range paths {
-		if rev.got[i].Path != p {
-			t.Fatalf("order not preserved at %d: want %s, got %s", i, p, rev.got[i].Path)
+		if docs[i].Path != p {
+			t.Fatalf("order not preserved at %d: want %s, got %s", i, p, docs[i].Path)
 		}
 	}
 }
@@ -116,13 +141,14 @@ func TestOrchestrator_WorkerFailureMarkedUnread(t *testing.T) {
 	if _, err := o.Review(context.Background(), paths); err != nil {
 		t.Fatalf("batch must survive one failure: %v", err)
 	}
-	if len(rev.got) != 3 {
-		t.Fatalf("want 3 digests passed to coordinator, got %d", len(rev.got))
+	docs := docsOnly(rev.got)
+	if len(docs) != 3 {
+		t.Fatalf("want 3 digests passed to coordinator, got %d", len(docs))
 	}
-	if rev.got[1].Path != "/d/bad.pdf" || strings.TrimSpace(rev.got[1].Text) != "" {
-		t.Fatalf("failed doc must be unread placeholder, got %+v", rev.got[1])
+	if docs[1].Path != "/d/bad.pdf" || strings.TrimSpace(docs[1].Text) != "" {
+		t.Fatalf("failed doc must be unread placeholder, got %+v", docs[1])
 	}
-	if rev.got[0].Text == "" || rev.got[2].Text == "" {
+	if docs[0].Text == "" || docs[2].Text == "" {
 		t.Fatalf("healthy docs must still be digested")
 	}
 }
@@ -135,8 +161,8 @@ func TestOrchestrator_DigestFailureMarkedUnread(t *testing.T) {
 	if _, err := o.Review(context.Background(), []string{"/d/x.pdf", "/d/y.pdf"}); err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	if strings.TrimSpace(rev.got[0].Text) != "" {
-		t.Fatalf("digest-failed doc must be unread, got %+v", rev.got[0])
+	if docs := docsOnly(rev.got); strings.TrimSpace(docs[0].Text) != "" {
+		t.Fatalf("digest-failed doc must be unread, got %+v", docs[0])
 	}
 }
 
@@ -196,20 +222,24 @@ func TestOrchestrator_FocusAndCollisionsPrepended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReviewRequest: %v", err)
 	}
-	if len(rev.got) != 4 {
-		t.Fatalf("want focus + collisions + 2 docs, got %d: %+v", len(rev.got), rev.got)
+	if len(rev.got) != 5 {
+		t.Fatalf("want focus + manifest + collisions + 2 docs, got %d: %+v", len(rev.got), rev.got)
 	}
 	if rev.got[0].Path != FocusDigestPath || rev.got[0].Text != "сверь площадь" {
 		t.Fatalf("focus must come first: %+v", rev.got[0])
 	}
-	if rev.got[1].Path != CollisionsDigestPath || !strings.Contains(rev.got[1].Text, "🔴 Общая площадь") {
-		t.Fatalf("collisions must follow focus: %+v", rev.got[1])
+	if rev.got[1].Path != ManifestDigestPath {
+		t.Fatalf("manifest must follow focus: %+v", rev.got[1])
 	}
-	if rev.got[2].Path != "/d/техплан.xml" || rev.got[3].Path != "/d/РнС.pdf" {
-		t.Fatalf("document order not preserved: %+v", rev.got[2:])
+	if rev.got[2].Path != CollisionsDigestPath || !strings.Contains(rev.got[2].Text, "🔴 Общая площадь") {
+		t.Fatalf("collisions must follow the manifest: %+v", rev.got[2])
 	}
-	if rev.got[2].Facts.DocType != "техплан" {
-		t.Fatalf("facts must be attached to the digest: %+v", rev.got[2])
+	docs := docsOnly(rev.got)
+	if docs[0].Path != "/d/техплан.xml" || docs[1].Path != "/d/РнС.pdf" {
+		t.Fatalf("document order not preserved: %+v", docs)
+	}
+	if docs[0].Facts.DocType != "техплан" {
+		t.Fatalf("facts must be attached to the digest: %+v", docs[0])
 	}
 	if facts.calls != 2 {
 		t.Fatalf("facts pass must run once per read document, got %d", facts.calls)
@@ -223,8 +253,14 @@ func TestOrchestrator_NoFactsNoPseudoDocs(t *testing.T) {
 	if _, err := o.Review(context.Background(), []string{"/d/a.pdf", "/d/b.pdf"}); err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	if len(rev.got) != 2 || rev.got[0].Path != "/d/a.pdf" {
-		t.Fatalf("plain review must pass documents only: %+v", rev.got)
+	if docs := docsOnly(rev.got); len(docs) != 2 || docs[0].Path != "/d/a.pdf" {
+		t.Fatalf("plain review must pass documents only: %+v", docs)
+	}
+	// The manifest is always there; the optional blocks are not.
+	for _, d := range rev.got {
+		if d.Path == FocusDigestPath || d.Path == ContextDigestPath || d.Path == CollisionsDigestPath {
+			t.Fatalf("unexpected block %q without focus, context or facts", d.Path)
+		}
 	}
 }
 
@@ -253,5 +289,143 @@ func TestOrchestrator_ZeroConcurrencyDoesNotDeadlock(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("zero concurrency deadlocked — default must apply")
+	}
+}
+
+func TestOrchestrator_ContextFollowsFocus(t *testing.T) {
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, rev, 2)
+
+	_, err := o.ReviewRequest(context.Background(), ReviewRequest{
+		Paths:   []string{"/d/РнС.pdf"},
+		Focus:   "сверь площадь",
+		Context: "— Пользователь: вчера пришла приостановка",
+	})
+	if err != nil {
+		t.Fatalf("ReviewRequest: %v", err)
+	}
+	if len(rev.got) != 4 {
+		t.Fatalf("want focus + context + manifest + doc, got %d: %+v", len(rev.got), rev.got)
+	}
+	if rev.got[0].Path != FocusDigestPath {
+		t.Fatalf("focus must come first: %+v", rev.got[0])
+	}
+	if rev.got[1].Path != ContextDigestPath || rev.got[1].Method != "user" || !strings.Contains(rev.got[1].Text, "приостановка") {
+		t.Fatalf("context must follow focus: %+v", rev.got[1])
+	}
+	if docs := docsOnly(rev.got); len(docs) != 1 || docs[0].Path != "/d/РнС.pdf" {
+		t.Fatalf("document must come last: %+v", docs)
+	}
+}
+
+// A coordinator failure after twenty minutes of digesting must not cost those
+// twenty minutes again: digests are cached by file content, and a rerun over
+// the same files only pays for the coordinator.
+func TestOrchestrator_DigestCacheSkipsRepeatWork(t *testing.T) {
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "РнС.pdf")
+	if err := os.WriteFile(doc, []byte("permit bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dg := &fakeDigester{}
+	facts := &fakeFacts{byPath: map[string]Facts{doc: {DocType: "разрешение на строительство"}}}
+	o := NewOrchestrator(&fakeExtractor{}, dg, &fakeReviewer{}, 2).WithFacts(facts).WithCache(filepath.Join(dir, "cache"), "v1")
+
+	if _, err := o.Review(context.Background(), []string{doc}); err != nil {
+		t.Fatalf("first review: %v", err)
+	}
+	if _, err := o.Review(context.Background(), []string{doc}); err != nil {
+		t.Fatalf("second review: %v", err)
+	}
+	if got := atomic.LoadInt32(&dg.calls); got != 1 {
+		t.Fatalf("digester called %d times, want 1 (second run served from cache)", got)
+	}
+	if facts.calls != 1 {
+		t.Fatalf("facts extracted %d times, want 1", facts.calls)
+	}
+	rev := &fakeReviewer{}
+	o2 := NewOrchestrator(&fakeExtractor{}, dg, rev, 2).WithFacts(facts).WithCache(filepath.Join(dir, "cache"), "v1")
+	if _, err := o2.Review(context.Background(), []string{doc}); err != nil {
+		t.Fatal(err)
+	}
+	if cached := docsOnly(rev.got)[0]; cached.Facts.DocType != "разрешение на строительство" || !strings.Contains(cached.Text, "digest of") {
+		t.Fatalf("cached digest must carry text and facts: %+v", cached)
+	}
+
+	// Changed bytes or a different key salt miss the cache.
+	if err := os.WriteFile(doc, []byte("permit bytes v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Review(context.Background(), []string{doc}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&dg.calls); got != 2 {
+		t.Fatalf("digester called %d times after content change, want 2", got)
+	}
+}
+
+func TestOrchestrator_PartialDigestIsNotCached(t *testing.T) {
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "ГПЗУ.pdf")
+	if err := os.WriteFile(doc, []byte("gpzu"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dg := &fakeDigester{partial: map[string]bool{doc: true}}
+	o := NewOrchestrator(&fakeExtractor{}, dg, &fakeReviewer{}, 2).WithCache(filepath.Join(dir, "cache"), "v1")
+	for i := 0; i < 2; i++ {
+		if _, err := o.Review(context.Background(), []string{doc}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&dg.calls); got != 2 {
+		t.Fatalf("partial digest must be redone on rerun, digester calls = %d", got)
+	}
+}
+
+// A number the coordinator wrote but no source contains is surfaced, not hidden.
+func TestOrchestrator_VerifiesReportNumbers(t *testing.T) {
+	rev := &fakeReviewer{report: "Площадь участка 29 439 м², в томе ОДИ — 28 600 м².",
+		evidence: []string{"норма без чисел"}}
+	o := NewOrchestrator(&fakeExtractor{}, &fakeDigester{}, rev, 2).WithFacts(&fakeFacts{byPath: map[string]Facts{
+		"/d/а.pdf": {DocType: "техплан", TEP: TEP{LandAreaM2: fp(29439)}},
+		"/d/б.pdf": {DocType: "разрешение", TEP: TEP{LandAreaM2: fp(29439)}},
+	}})
+
+	res, err := o.ReviewRequest(context.Background(), ReviewRequest{Paths: []string{"/d/а.pdf", "/d/б.pdf"}})
+	if err != nil {
+		t.Fatalf("ReviewRequest: %v", err)
+	}
+	if len(res.Unverified) != 1 || res.Unverified[0].Value != "28600" {
+		t.Fatalf("want 28600 flagged, got %+v", res.Unverified)
+	}
+	if !strings.Contains(res.CrossCheck, "АВТОСВЕРКА") {
+		t.Fatalf("cross-check must come back for the report: %q", res.CrossCheck)
+	}
+}
+
+// The reduce pass merges forty digests into three blocks, and files that fall
+// out of the squeeze look «не прочитан» to the coordinator. The authoritative
+// roster of what was read is built in Go and handed over as its own block.
+func TestOrchestrator_ManifestListsEveryDocument(t *testing.T) {
+	rev := &fakeReviewer{}
+	o := NewOrchestrator(&fakeExtractor{errs: map[string]error{"/d/битый.pdf": errors.New("boom")}}, &fakeDigester{}, rev, 2)
+
+	if _, err := o.ReviewRequest(context.Background(), ReviewRequest{Paths: []string{"/d/а.pdf", "/d/битый.pdf"}}); err != nil {
+		t.Fatalf("ReviewRequest: %v", err)
+	}
+	var manifest string
+	for _, d := range rev.got {
+		if d.Path == ManifestDigestPath {
+			manifest = d.Text
+		}
+	}
+	if manifest == "" {
+		t.Fatalf("no manifest among %d blocks", len(rev.got))
+	}
+	if !strings.Contains(manifest, "а.pdf") || !strings.Contains(manifest, "прочитан") {
+		t.Errorf("read document missing from the manifest:\n%s", manifest)
+	}
+	if !strings.Contains(manifest, "битый.pdf") || !strings.Contains(manifest, "НЕ прочитан") {
+		t.Errorf("unread document must be marked as such:\n%s", manifest)
 	}
 }

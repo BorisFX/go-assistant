@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/a6image"
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/a6video"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
 	// Aliased: the package name would otherwise clash with the Google SDK's own
@@ -76,6 +77,10 @@ func main() {
 	reviewDir := flag.String("review-dir", "", "run the legal review over a local directory and exit (requires legal_review.enabled)")
 	reviewOut := flag.String("review-out", "", "where to write the markdown report for --review-dir (default: <dir>/Заключение.md)")
 	ingestNorms := flag.Bool("ingest-norms", false, "index legal_review.norms_dir into the normative corpus and exit")
+	drivePut := flag.String("drive-put", "", "mirror a local directory into the shared Google Drive and exit (requires google config)")
+	driveDest := flag.String("drive-dest", "", "Drive folder path for --drive-put (default: the directory's own name)")
+	driveTree := flag.Bool("drive-tree", false, "print the shared Google Drive as a tree with file ids and exit")
+	driveMoves := flag.String("drive-moves", "", "apply a plan file of \"<file id>\\t<dest path>\" moves on the shared Drive and exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -200,20 +205,41 @@ func main() {
 
 	// Image drawing: no llm.image block means no tool, so instances that never
 	// asked to draw (the Yuri bot) keep exactly the tool set they had.
+	var imageClient *a6image.Client
 	if cfg.LLM.Image.Model != "" {
 		imageKey := cfg.LLM.Image.APIKey
 		if imageKey == "" {
 			imageKey = cfg.LLM.Chat.APIKey
 		}
-		imageClient := a6image.New(
+		imageClient = a6image.New(
 			imageKey,
 			cfg.LLM.Image.Model,
 			cfg.LLM.Image.Fallback,
 			cfg.LLM.Image.BaseURL,
 			filesDir,
 		).WithSize(cfg.LLM.Image.Size)
-		register(builtin.NewGenerateImage(imageClient))
+		register(builtin.NewGenerateImage(imageClient).WithComposer(imageClient))
 		slog.Info("image generation enabled", "model", cfg.LLM.Image.Model, "fallback", cfg.LLM.Image.Fallback)
+	}
+
+	// Video clips: same gating as images — no llm.video block, no tool.
+	if cfg.LLM.Video.Model != "" {
+		videoKey := cfg.LLM.Video.APIKey
+		if videoKey == "" {
+			videoKey = cfg.LLM.Image.APIKey
+		}
+		if videoKey == "" {
+			videoKey = cfg.LLM.Chat.APIKey
+		}
+		videoClient := a6video.New(videoKey, cfg.LLM.Video.Model, cfg.LLM.Video.BaseURL, filesDir).
+			WithSize(cfg.LLM.Video.Size)
+		// Several references are blended into the opening frame by the image model.
+		var composer output.ImageComposer
+		if imageClient != nil {
+			composer = imageClient
+		}
+		register(builtin.NewGenerateVideo(videoClient, composer, cfg.LLM.Video.PricePerSecond))
+		slog.Info("video generation enabled", "model", cfg.LLM.Video.Model, "blend_frames", composer != nil)
 	}
 
 	var (
@@ -227,6 +253,10 @@ func main() {
 	if cfg.MailRu.Email != "" {
 		mailRuCloud = builtin.NewMailRuCloud(cfg.MailRu.Email, cfg.MailRu.Password, cfg.MailRu.BasePath, filesDir)
 		register(mailRuCloud)
+	}
+	if (*drivePut != "" || *driveTree || *driveMoves != "") && !cfg.Google.Enabled() {
+		slog.Error("--drive-put needs the google section in config")
+		os.Exit(1)
 	}
 	if cfg.Google.Enabled() {
 		// Fail loudly: a configured but broken Google setup is a deployment
@@ -246,7 +276,17 @@ func main() {
 			slog.Error("failed to create google drive client", "error", err)
 			os.Exit(1)
 		}
+		if *drivePut != "" {
+			os.Exit(runDrivePut(driveClient, *drivePut, *driveDest))
+		}
+		if *driveTree {
+			os.Exit(runDriveTree(driveClient, 9))
+		}
+		if *driveMoves != "" {
+			os.Exit(runDriveMoves(driveClient, *driveMoves))
+		}
 		driveFiles = builtin.NewDriveFiles(driveClient, filesDir)
+		driveFiles.SetProjectsFolder(cfg.Google.Drive.ProjectsFolder)
 		if mailRuCloud != nil {
 			// Lets an object's folder be carried from the Mail.ru archive into
 			// the project's Drive folder without the bytes passing the model.
@@ -267,7 +307,7 @@ func main() {
 			slog.Error("failed to create google sheets client", "error", err)
 			os.Exit(1)
 		}
-		projectSvc := projects.NewService(sheetsClient, driveClient)
+		projectSvc := projects.NewService(sheetsClient, driveClient).WithFolder(cfg.Google.Drive.ProjectsFolder)
 		register(builtin.NewProjects(projectSvc))
 		slog.Info("projects tool enabled", "registry_id", cfg.Google.Sheets.RegistryID)
 
@@ -406,6 +446,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.LLM.Video.Model != "" {
+		bot.EnableMediaRefs()
+	}
+
 	// Wire cron send function to bot
 	cronSendFunc = bot.SendToOwner
 
@@ -509,7 +553,9 @@ func main() {
 		// Structured facts ride on the cheap digest model; the deterministic
 		// cross-check of ТЭП/cadastral numbers is built from them in Go.
 		facts := legalreview.NewFactsExtractor(runner, cfg.LegalReview.DigestModel)
-		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency).WithFacts(facts)
+		orch := legalreview.NewOrchestrator(extractRouter, worker, coord, cfg.LegalReview.Concurrency).
+			WithFacts(facts).
+			WithCache(filepath.Join(filesDir, "digest-cache"), cfg.LegalReview.DigestModel)
 		if *reviewDir != "" {
 			os.Exit(runHeadlessReview(orch, cfg, string(normativy), *reviewDir, *reviewOut))
 		}
@@ -526,6 +572,7 @@ func main() {
 			DigestModel:      cfg.LegalReview.DigestModel,
 			CoordinatorModel: cfg.LegalReview.CoordinatorModel,
 			NormativyHash:    legalreview.HashText(string(normativy)),
+			History:          messageRepo,
 		})
 		slog.Info("legal-review pipeline enabled",
 			"max_files", cfg.LegalReview.MaxFiles, "storages", len(collectors))

@@ -29,8 +29,16 @@ type LLMRequest struct {
 }
 
 type LLMResponse struct {
-	Content      string
+	Content string
+	// FinishReason is the provider's reason for stopping: "stop" when the model
+	// finished, "length" when it ran into the output cap. A report cut off by
+	// the cap must never be mistaken for a complete one.
+	FinishReason string
 	ToolCalls    []entity.ToolCall
+	// ToolTrace is what the tools actually returned during this turn. It is
+	// kept so the facts a document read produced outlive the turn instead of
+	// being reduced to the model's own prose.
+	ToolTrace    []entity.ToolCall
 	InputTokens  int
 	OutputTokens int
 	Model        string

@@ -62,6 +62,8 @@ func TestChunkPages_EmptyIsNil(t *testing.T) {
 type fakeRunner struct {
 	outputs []string
 	err     error
+	errs    []error  // per-call errors, used before err
+	finish  []string // per-call finish reasons reported through the hook
 	tasks   []string
 	cfgs    []subagent.Config
 }
@@ -69,6 +71,12 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, cfg subagent.Config, task string) (string, error) {
 	f.tasks = append(f.tasks, task)
 	f.cfgs = append(f.cfgs, cfg)
+	if n := len(f.tasks) - 1; n < len(f.finish) && cfg.OnFinishReason != nil {
+		cfg.OnFinishReason(f.finish[n])
+	}
+	if n := len(f.tasks) - 1; n < len(f.errs) && f.errs[n] != nil {
+		return "", f.errs[n]
+	}
 	if f.err != nil {
 		return "", f.err
 	}
@@ -151,7 +159,7 @@ func TestDigest_RunnerErrorPropagates(t *testing.T) {
 }
 
 func TestDigest_EmptyOutputErrors(t *testing.T) {
-	runner := &fakeRunner{outputs: []string{"   "}} // blank digest = doc effectively unread
+	runner := &fakeRunner{outputs: []string{"   ", "   "}} // blank twice = doc effectively unread
 	w := NewDigestWorker(runner, "m", 100)
 	doc := extraction.Result{Path: "/d/x.pdf", Pages: []output.PDFPage{{Number: 1, Text: "t"}}}
 	if _, err := w.Digest(context.Background(), doc); err == nil {
@@ -172,5 +180,50 @@ func TestDigest_ZeroBudgetFallsBackToDefault(t *testing.T) {
 	}
 	if len(runner.tasks) != 1 {
 		t.Fatalf("want a single batched call under default budget, got %d", len(runner.tasks))
+	}
+}
+
+// A reasoning model that burns its whole budget on hidden thinking returns an
+// empty completion for a big batch. The batch is halved and retried, not the
+// whole document thrown away.
+func TestDigest_EmptyBatchIsSplitAndRetried(t *testing.T) {
+	// budget 10 chars, 6-char pages -> 1 page per batch... so use 4-char pages: 2 per batch.
+	pages := []output.PDFPage{
+		{Number: 1, Text: "aaaa"}, {Number: 2, Text: "bbbb"},
+		{Number: 3, Text: "cccc"}, {Number: 4, Text: "dddd"},
+	}
+	runner := &fakeRunner{outputs: []string{"d12", "", "d3", "d4"}}
+	w := NewDigestWorker(runner, "m", 9)
+	got, err := w.Digest(context.Background(), extraction.Result{Path: "/d/x.pdf", Pages: pages})
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	if len(runner.tasks) != 4 {
+		t.Fatalf("want 4 calls (2 batches, 1 split into halves), got %d", len(runner.tasks))
+	}
+	for _, part := range []string{"d12", "d3", "d4"} {
+		if !strings.Contains(got.Text, part) {
+			t.Fatalf("digest %q lacks %q", got.Text, part)
+		}
+	}
+	if !strings.Contains(runner.tasks[2], "Страница 3") || strings.Contains(runner.tasks[2], "Страница 4") {
+		t.Fatalf("second half must be page 3 alone, task: %q", runner.tasks[2])
+	}
+}
+
+func TestDigest_UnreadPartIsMarkedNotFatal(t *testing.T) {
+	pages := []output.PDFPage{{Number: 1, Text: "aaaa"}, {Number: 2, Text: "bbbb"}}
+	// batch1 ok; batch2 (one page) empty, retry empty -> placeholder.
+	runner := &fakeRunner{outputs: []string{"d1", "", ""}}
+	w := NewDigestWorker(runner, "m", 5)
+	got, err := w.Digest(context.Background(), extraction.Result{Path: "/d/x.pdf", Pages: pages})
+	if err != nil {
+		t.Fatalf("one unread part must not fail the document: %v", err)
+	}
+	if !strings.Contains(got.Text, "d1") || !strings.Contains(got.Text, "не прочитан") || !strings.Contains(got.Text, "стр. 2") {
+		t.Fatalf("digest = %q", got.Text)
+	}
+	if len(runner.tasks) != 3 {
+		t.Fatalf("want batch + retry, got %d calls", len(runner.tasks))
 	}
 }

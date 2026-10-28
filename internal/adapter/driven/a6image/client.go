@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,58 @@ func (c *Client) Edit(ctx context.Context, imagePath, prompt string) (string, er
 		}
 		if _, err := part.Write(source); err != nil {
 			return nil, err
+		}
+		if err := form.Close(); err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/images/edits", bytes.NewReader(body.Bytes()))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		return req, nil
+	})
+}
+
+// Compose sends several images to /images/edits as image[] parts — the model
+// treats them as references in order and draws one picture from them.
+func (c *Client) Compose(ctx context.Context, imagePaths []string, prompt, size string) (string, error) {
+	if size == "" {
+		size = c.size
+	}
+	sources := make([][]byte, len(imagePaths))
+	for i, path := range imagePaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read reference image: %w", err)
+		}
+		sources[i] = data
+	}
+
+	return c.withModels(ctx, "compose", func(ctx context.Context, model string) (*http.Request, error) {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		if err := form.WriteField("model", model); err != nil {
+			return nil, err
+		}
+		if err := form.WriteField("prompt", prompt); err != nil {
+			return nil, err
+		}
+		if err := form.WriteField("size", size); err != nil {
+			return nil, err
+		}
+		for i, data := range sources {
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image[]"; filename="%s"`, filepath.Base(imagePaths[i])))
+			header.Set("Content-Type", http.DetectContentType(data))
+			part, err := form.CreatePart(header)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := part.Write(data); err != nil {
+				return nil, err
+			}
 		}
 		if err := form.Close(); err != nil {
 			return nil, err

@@ -31,10 +31,33 @@ const (
 type Service struct {
 	sheets sheetClient
 	drive  driveClient
+	// folder is the Drive folder that holds every project («Проекты»); empty
+	// means projects sit at the drive root. The registry stores bare names.
+	folder string
 }
 
 func NewService(sheets sheetClient, drive driveClient) *Service {
 	return &Service{sheets: sheets, drive: drive}
+}
+
+// WithFolder puts all project folders under one Drive folder.
+func (s *Service) WithFolder(folder string) *Service {
+	s.folder = strings.Trim(folder, "/")
+	return s
+}
+
+// Folder is the Drive folder holding the projects, "" for the root.
+func (s *Service) Folder() string { return s.folder }
+
+// path builds a Drive path inside a project: <folder>/<project>/<parts...>.
+func (s *Service) path(project string, parts ...string) string {
+	segs := make([]string, 0, len(parts)+2)
+	if s.folder != "" {
+		segs = append(segs, s.folder)
+	}
+	segs = append(segs, project)
+	segs = append(segs, parts...)
+	return strings.Join(segs, "/")
 }
 
 // Project is one row of the Проекты sheet.
@@ -111,14 +134,15 @@ func (s *Service) Scaffold(ctx context.Context, project, routeCode string) ([]st
 		return nil, fmt.Errorf("маршрут %q не найден; доступны: %s", routeCode, strings.Join(routeCodes(routes), ", "))
 	}
 
-	if _, err := s.drive.EnsurePath(ctx, project); err != nil {
-		// The project folder itself is never auto-created — see EnsurePath.
-		return nil, fmt.Errorf("папка проекта %q не найдена, создайте её сначала: %w", project, err)
+	if _, err := s.drive.ResolvePath(ctx, s.path(project)); err != nil {
+		// The project folder itself is never auto-created: a typo in the name
+		// must be a loud error, not a silently started second project.
+		return nil, fmt.Errorf("папка проекта %q не найдена, создайте её сначала: %w", s.path(project), err)
 	}
 
 	created := make([]string, 0, len(route.Folders()))
 	for _, folder := range route.Folders() {
-		if _, err := s.drive.EnsurePath(ctx, project+"/"+folder); err != nil {
+		if _, err := s.drive.EnsurePath(ctx, s.path(project, folder)); err != nil {
 			return created, fmt.Errorf("создать %s/%s: %w", project, folder, err)
 		}
 		created = append(created, folder)
@@ -178,10 +202,10 @@ func (s *Service) Status(ctx context.Context, project, routeCode string) (*Proje
 	}
 
 	out := &ProjectStatus{Project: project, Route: routeCode}
-	out.Source = s.fileNames(ctx, project+"/"+SourceFolder)
+	out.Source = s.fileNames(ctx, s.path(project, SourceFolder))
 
 	for _, stage := range route.Stages {
-		files := s.fileNames(ctx, project+"/"+stage.Folder())
+		files := s.fileNames(ctx, s.path(project, stage.Folder()))
 		out.Stages = append(out.Stages, CheckStage(stage, files))
 	}
 	out.Current = CurrentStage(out.Stages)

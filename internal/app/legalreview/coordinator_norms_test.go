@@ -70,9 +70,9 @@ func TestCoordinator_ExcerptsErrorIsNotFatal(t *testing.T) {
 	runner := &fakeRunner{outputs: []string{"отчёт"}}
 	c := NewCoordinator(runner, "sonnet", "flash", "", 80000)
 	c.SetNormRetriever(&fakeNorms{err: errors.New("db down")})
-	out, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}})
-	if err != nil || out != "отчёт" {
-		t.Fatalf("review must survive a corpus failure: %v %q", err, out)
+	got, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}})
+	if err != nil || got.Report != "отчёт" {
+		t.Fatalf("review must survive a corpus failure: %v %q", err, got.Report)
 	}
 }
 

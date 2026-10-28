@@ -6,7 +6,14 @@ import (
 	"strings"
 )
 
-var reviewFolderRe = regexp.MustCompile(`(?i)^\s*разбери\s+папку\s+(.+?)\s*$`)
+// reviewFolderRe accepts «разбери папку X» and the looser phrasings people
+// actually type («просканируй документы в X», «проверь доки в папке X»). The
+// noun after the verb is mandatory: a bare «проверь …» is a chat question and
+// must not start a paid review run.
+var reviewFolderRe = regexp.MustCompile(
+	`(?i)^\s*(?:разбери|проверь|просканируй|проскань|проанализируй|прогони)\s+` +
+		`(?:папку|документы|документацию|доки|файлы|проект)` +
+		`(?:\s+(?:в\s+папке|из\s+папки|в|из))?\s+(.+?)\s*$`)
 
 // focusSeparators split the folder from an optional task after it:
 // «разбери папку X: замечания Росреестра», «разбери папку X — что с этажностью».

@@ -1,6 +1,7 @@
 package chat_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/olegmatyakubov/go-assistant/internal/app/chat"
@@ -124,6 +125,27 @@ func TestClassifierOffersImageToolForDrawingRequests(t *testing.T) {
 				}
 			}
 			t.Errorf("input %q classified to %v, want generate_image among them", input, tools)
+		})
+	}
+}
+
+func TestClassifierOffersVideoTool(t *testing.T) {
+	c := chat.NewRuleClassifier()
+
+	inputs := []string{
+		"сделай видос где кот из первой картинки едет на машине",
+		"сгенерируй видео по этим фоткам",
+		"оживи эту фотку",
+		"сделай такой же ролик как в гифке",
+		"make a short video of a dancing robot",
+	}
+
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			_, tools, _ := c.Classify(input)
+			if !slices.Contains(tools, "generate_video") {
+				t.Errorf("input %q classified to %v, want generate_video among them", input, tools)
+			}
 		})
 	}
 }
@@ -311,6 +333,42 @@ func TestClassifierOffersResearchRecent(t *testing.T) {
 	for _, tool := range tools {
 		if tool == "research_recent" {
 			t.Errorf("factual lookup should not offer research_recent: %v", tools)
+		}
+	}
+}
+
+// A keyword-less message after video work must still see every tool: the
+// sticky context once left only search and video, and the bot lost bash.
+func TestClassifyWithContextNoHitKeepsAllTools(t *testing.T) {
+	c := chat.NewRuleClassifier()
+	history := []string{"сделай видео с котом", "что нового на реддите"}
+
+	_, tools, _ := c.ClassifyWithContext("а теперь глянь, что там", history)
+	if len(tools) != 0 {
+		t.Errorf("сообщение без ключевых слов сужено контекстом: %v", tools)
+	}
+}
+
+func TestClassifierRoutesMayorAndVault(t *testing.T) {
+	c := chat.NewRuleClassifier()
+	cases := map[string]string{
+		"передай мэру новое задание": "bash",
+		"мэр, как дела":              "bash",
+		"что в гастауне":             "bash",
+		"прочитай мой волт":          "obsidian",
+		"найди в вольте заметку":     "obsidian",
+		"запиши в obsidian":          "obsidian",
+	}
+	for input, want := range cases {
+		_, tools, _ := c.Classify(input)
+		found := false
+		for _, got := range tools {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q: нет %s в %v", input, want, tools)
 		}
 	}
 }

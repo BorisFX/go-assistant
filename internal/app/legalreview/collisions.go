@@ -13,6 +13,9 @@ import (
 // are the same number written with different rounding. Cadastral records keep
 // 0.1 m²; a 24 m² gap between a tech plan and a permit is a suspension ground,
 // so no relative slack is allowed.
+// collisionsTitle labels the block both in the prompt and in the report.
+const collisionsTitle = "АВТОСВЕРКА"
+
 const numericTolerance = 0.051
 
 // tepField describes one comparable numeric parameter.
@@ -38,10 +41,16 @@ var tepFields = []tepField{
 // either agree or they do not, and the coordinator gets that as a fact.
 // Returns "" when fewer than two documents carry facts.
 func Collide(digests []Digest) string {
-	var docs []Digest
+	var docs, factless []Digest
 	for _, d := range digests {
-		if !d.Facts.Empty() {
+		switch {
+		case !d.Facts.Empty():
 			docs = append(docs, d)
+		case strings.TrimSpace(d.Text) != "":
+			// Read, but nothing structured came out of it. Saying so is what
+			// stops the coordinator from treating this document's numbers as
+			// cross-checked — or inventing them.
+			factless = append(factless, d)
 		}
 	}
 	if len(docs) < 2 {
@@ -49,7 +58,7 @@ func Collide(digests []Digest) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("АВТОСВЕРКА (детерминированная, по извлечённым данным)\n")
+	b.WriteString(collisionsTitle + " (детерминированная, по извлечённым данным)\n")
 	b.WriteString("Сравнение ключевых параметров между документами пачки. 🔴 — расхождение, ✅ — совпадает, «нет сверки» — параметр есть только в одном документе.\n\n")
 
 	for _, f := range tepFields {
@@ -79,6 +88,12 @@ func Collide(digests []Digest) string {
 	writeSetField(&b, "Кадастровые номера", docs, func(f Facts) []string { return f.CadastralNumbers })
 	writeStringField(&b, "Адрес", docs, func(f Facts) string { return f.Address })
 
+	if len(factless) > 0 {
+		b.WriteString("\nВ АВТОСВЕРКЕ НЕ УЧАСТВУЮТ (из этих документов не удалось извлечь структурные данные, любые числа по ним программой НЕ сверены):\n")
+		for _, d := range factless {
+			b.WriteString("• " + docLabel(d) + "\n")
+		}
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 

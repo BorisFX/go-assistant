@@ -32,8 +32,15 @@ func (e *LocalExtractor) Extract(ctx context.Context, path string) ([]output.PDF
 	return splitPages(raw), nil
 }
 
+// pdftotextArgs keeps -layout on: review documents are mostly tables (areas,
+// КП positions, экспликации), and without it a row's cells arrive as separate
+// lists that can only be re-paired by guessing.
+func pdftotextArgs(path string) []string {
+	return []string{"-layout", "-enc", "UTF-8", path, "-"}
+}
+
 func runPdftotext(ctx context.Context, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", path, "-")
+	cmd := exec.CommandContext(ctx, "pdftotext", pdftotextArgs(path)...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

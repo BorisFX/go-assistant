@@ -19,6 +19,13 @@ type Config struct {
 	MaxTurns     int
 	Temperature  float64
 	MaxTokens    int
+	// OnToolResult, when set, receives every tool result the subagent saw.
+	// The legal-review coordinator keeps the norm texts it fetched this way,
+	// so its report can be verified against everything the model actually read.
+	OnToolResult func(tool, result string)
+	// OnFinishReason, when set, receives the provider's stop reason of every
+	// turn. "length" means the answer was cut off by the output cap.
+	OnFinishReason func(reason string)
 }
 
 const (
@@ -86,6 +93,9 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 		if resp == nil {
 			return "", fmt.Errorf("subagent llm returned nil response (turn %d)", turn)
 		}
+		if cfg.OnFinishReason != nil {
+			cfg.OnFinishReason(resp.FinishReason)
+		}
 		slog.Info("subagent call",
 			"model", cfg.Model,
 			"turn", turn,
@@ -102,7 +112,11 @@ func (r *Runner) Run(ctx context.Context, cfg Config, task string) (string, erro
 			ToolCalls: resp.ToolCalls,
 		})
 		for _, tc := range resp.ToolCalls {
-			messages = append(messages, r.runTool(ctx, allowed, tc))
+			msg := r.runTool(ctx, allowed, tc)
+			if cfg.OnToolResult != nil {
+				cfg.OnToolResult(tc.Name, msg.Content)
+			}
+			messages = append(messages, msg)
 		}
 	}
 	return "", fmt.Errorf("subagent: turn budget (%d) exhausted without a final answer", cfg.MaxTurns)

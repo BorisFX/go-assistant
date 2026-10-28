@@ -78,6 +78,9 @@ type Google struct {
 
 type GoogleDrive struct {
 	RootFolderID string `yaml:"root_folder_id"`
+	// ProjectsFolder is the folder under the shared drive that holds every
+	// project folder; default «Проекты».
+	ProjectsFolder string `yaml:"projects_folder"`
 }
 
 type GoogleSheets struct {
@@ -137,6 +140,19 @@ type LLM struct {
 	Embedding LLMModel   `yaml:"embedding"`
 	Vision    LLMModel   `yaml:"vision"`
 	Image     ImageModel `yaml:"image"`
+	Video     VideoModel `yaml:"video"`
+}
+
+// VideoModel configures clip generation through the a6api /videos task API.
+// An empty Model disables the generate_video tool and the reference-collecting
+// photo mode, so other instances keep their behaviour.
+type VideoModel struct {
+	Model   string `yaml:"model"`
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Size    string `yaml:"size"`
+	// PricePerSecond (USD) is only shown to the user as an estimate.
+	PricePerSecond float64 `yaml:"price_per_second"`
 }
 
 // ImageModel configures the image-drawing endpoint (OpenAI-compatible
@@ -312,6 +328,9 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) setDefaults() {
+	if c.Google.Drive.ProjectsFolder == "" {
+		c.Google.Drive.ProjectsFolder = "Проекты"
+	}
 	if c.Mode == "" {
 		c.Mode = "server"
 	}

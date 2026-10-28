@@ -17,6 +17,9 @@ import (
 // carries a picture.
 const imageToolName = "generate_image"
 
+// videoToolName rides along with pictures too: sent photos are video references.
+const videoToolName = "generate_video"
+
 func containsName(names []string, want string) bool {
 	for _, n := range names {
 		if n == want {
@@ -152,8 +155,12 @@ func (p *Pipeline) Process(ctx context.Context, messages []output.LLMMessage, on
 	// leave only document tools on the table, and the model then announces it
 	// cannot edit images. An empty list already means "every tool", so only a
 	// narrowed list needs the addition; unregistered names are skipped later.
-	if hasImages && len(toolNames) > 0 && !containsName(toolNames, imageToolName) {
-		toolNames = append(toolNames, imageToolName)
+	if hasImages && len(toolNames) > 0 {
+		for _, name := range []string{imageToolName, videoToolName} {
+			if !containsName(toolNames, name) {
+				toolNames = append(toolNames, name)
+			}
+		}
 	}
 
 	// Tool-driven work (document analysis, signatures, trading, code) is a
@@ -235,8 +242,10 @@ func (tl *ToolLoop) Run(
 	onUpdate func(string),
 ) (*output.LLMResponse, error) {
 	resp := initialResp
+	var trace []entity.ToolCall
 
 	for turn := 0; turn < tl.maxTurns && len(resp.ToolCalls) > 0; turn++ {
+		calls := resp.ToolCalls
 		messages = append(messages, output.LLMMessage{
 			Role:      entity.RoleAssistant,
 			Content:   resp.Content,
@@ -309,6 +318,14 @@ func (tl *ToolLoop) Run(
 		wg.Wait()
 		for _, r := range results {
 			messages = append(messages, r.message)
+			if r.idx < len(calls) {
+				trace = append(trace, entity.ToolCall{
+					ID:     calls[r.idx].ID,
+					Name:   calls[r.idx].Name,
+					Args:   calls[r.idx].Args,
+					Result: r.message.Content,
+				})
+			}
 		}
 
 		// Make the model aware the tool budget is finite so it converges on an
@@ -383,6 +400,7 @@ func (tl *ToolLoop) Run(
 		}
 	}
 
+	resp.ToolTrace = captureTrace(trace)
 	return resp, nil
 }
 

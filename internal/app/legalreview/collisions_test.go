@@ -81,3 +81,25 @@ func TestCollide_TenthOfSquareMetreIsACollision(t *testing.T) {
 		t.Fatalf("expected a collision on 0.1 m²:\n%s", out)
 	}
 }
+
+// Documents whose facts could not be extracted take no part in the cross-check.
+// Saying so in the block is what keeps the coordinator from filling the gap
+// with invention.
+func TestCollideNamesDocumentsOutsideTheCrossCheck(t *testing.T) {
+	digests := []Digest{
+		{Path: "/d/техплан.xml", Text: "t", Facts: Facts{DocType: "техплан", TEP: TEP{AreaTotalM2: fp(100)}}},
+		{Path: "/d/РнС.pdf", Text: "t", Facts: Facts{DocType: "разрешение", TEP: TEP{AreaTotalM2: fp(120)}}},
+		{Path: "/d/ОДИ.pdf", Text: "t"}, // facts extraction failed
+		{Path: "/d/битый.pdf"},          // not read at all
+	}
+	out := Collide(digests)
+	if !strings.Contains(out, "ОДИ.pdf") {
+		t.Errorf("a document without facts must be named:\n%s", out)
+	}
+	if !strings.Contains(out, "НЕ УЧАСТВУЮТ") {
+		t.Errorf("block must say such documents took no part:\n%s", out)
+	}
+	if strings.Contains(out, "битый.pdf") {
+		t.Errorf("an unread document is already reported as unread, not here:\n%s", out)
+	}
+}

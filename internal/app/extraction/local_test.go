@@ -49,3 +49,14 @@ func TestLocalExtractor_UsesInjectedRunner(t *testing.T) {
 		t.Fatalf("unexpected pages: %+v", pages)
 	}
 }
+
+// Table-heavy review documents only survive extraction with -layout.
+func TestPdftotextArgsPreserveLayout(t *testing.T) {
+	args := pdftotextArgs("/docs/АР.pdf")
+	if args[0] != "-layout" {
+		t.Errorf("extraction must preserve layout, got %v", args)
+	}
+	if args[len(args)-2] != "/docs/АР.pdf" || args[len(args)-1] != "-" {
+		t.Errorf("path must be passed with stdout target, got %v", args)
+	}
+}

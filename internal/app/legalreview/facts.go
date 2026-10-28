@@ -57,6 +57,9 @@ const factsSystemPrompt = `Ты извлекаешь СТРУКТУРНЫЕ ДА
 
 const factsMaxTokens = 2048
 
+// factsRetryHint is appended when the first answer was not JSON.
+const factsRetryHint = "ВНИМАНИЕ: предыдущий ответ не был разобран. Верни ТОЛЬКО JSON-объект по схеме из системного промпта. Без пояснений, без markdown, без ```. Первый символ ответа — «{», последний — «}»."
+
 // FactsExtractor asks the cheap model for a JSON skeleton of a digest. Any
 // failure yields empty Facts: the prose digest still reaches the coordinator,
 // and the cross-check simply has one document fewer to compare.
@@ -89,8 +92,20 @@ func (e *FactsExtractor) Extract(ctx context.Context, d Digest) Facts {
 	}
 	facts, err := ParseFacts(out)
 	if err != nil {
-		slog.Warn("legalreview facts: unparsable output", "path", d.Path, "error", err)
-		return Facts{}
+		// The cheap model sometimes answers with prose. A document that loses
+		// its facts drops out of the deterministic cross-check without a trace,
+		// so it gets one stricter attempt before being given up on.
+		slog.Warn("legalreview facts: unparsable output, retrying", "path", d.Path, "error", err)
+		out, err = e.runner.Run(ctx, cfg, fmt.Sprintf("Документ: %s\n\n%s\n\n%s", d.Path, d.Text, factsRetryHint))
+		if err != nil {
+			slog.Warn("legalreview facts: model call failed", "path", d.Path, "error", err)
+			return Facts{}
+		}
+		facts, err = ParseFacts(out)
+		if err != nil {
+			slog.Warn("legalreview facts: unparsable output", "path", d.Path, "error", err)
+			return Facts{}
+		}
 	}
 	slog.Info("legalreview facts", "path", d.Path, "doc_type", facts.DocType,
 		"cadastral", len(facts.CadastralNumbers), "ms", time.Since(start).Milliseconds())

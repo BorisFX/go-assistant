@@ -41,12 +41,13 @@ func TestCoordinator_SingleSonnetCallUnderBudget(t *testing.T) {
 	runner := &fakeRunner{outputs: []string{"ЗАКЛЮЧЕНИЕ ПО ТЕХПЛАНУ: расхождение площади (файл /d/a.pdf, стр. 1)"}}
 	c := NewCoordinator(runner, "anthropic/claude-sonnet-4.6", "deepseek/deepseek-v4-flash", "СП 1: площадь считается так-то.", 100000)
 
-	report, err := c.Review(context.Background(), []Digest{
+	reportOut, err := c.Review(context.Background(), []Digest{
 		{Path: "/d/a.pdf", Method: "pdftotext", Text: "Площадь 120 м2 (стр. 1)"},
 	})
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
+	report := reportOut.Report
 	if !strings.Contains(report, "ЗАКЛЮЧЕНИЕ ПО ТЕХПЛАНУ") {
 		t.Fatalf("report missing, got %q", report)
 	}
@@ -122,13 +123,14 @@ func TestCoordinator_OverBudgetReducesThenSonnet(t *testing.T) {
 	c := NewCoordinator(runner, "sonnet", "deepseek-flash", "", 50)
 
 	big := strings.Repeat("ц", 4000) // ~1000 токенов каждая
-	report, err := c.Review(context.Background(), []Digest{
+	reportOut, err := c.Review(context.Background(), []Digest{
 		{Path: "/d/a.pdf", Text: big},
 		{Path: "/d/b.pdf", Text: big},
 	})
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
+	report := reportOut.Report
 	if !strings.Contains(report, "ИТОГ") {
 		t.Fatalf("final report missing, got %q", report)
 	}
@@ -179,5 +181,121 @@ func TestCoordinatorToolsEnableToolLoop(t *testing.T) {
 	}
 	if cfg.MaxTurns != coordinatorMaxTurns {
 		t.Errorf("tool loop must get several turns, got %d", cfg.MaxTurns)
+	}
+}
+
+// The coordinator can spend its whole turn budget looking norms up and then
+// return nothing. Losing an hour of digesting to that is unacceptable: it is
+// asked once more, without tools, to write the report from what it already has.
+func TestCoordinator_EmptyAfterToolLoopIsRetriedWithoutTools(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"", "ЗАКЛЮЧЕНИЕ: итог по имеющимся данным"}}
+	c := NewCoordinator(runner, "m", "r", "", 100000)
+	c.SetTools("norm_search")
+
+	got, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if !strings.Contains(got.Report, "ЗАКЛЮЧЕНИЕ") {
+		t.Fatalf("report = %q", got.Report)
+	}
+	if len(runner.cfgs) != 2 {
+		t.Fatalf("want a second call, got %d", len(runner.cfgs))
+	}
+	if len(runner.cfgs[1].ToolNames) != 0 || runner.cfgs[1].MaxTurns != 1 {
+		t.Errorf("retry must be a single tool-less turn: %+v", runner.cfgs[1])
+	}
+	if !strings.Contains(runner.tasks[1], "ПРЯМО СЕЙЧАС") {
+		t.Errorf("retry task must demand the report now:\n%s", runner.tasks[1])
+	}
+}
+
+// An exhausted turn budget is the same failure wearing an error: retry, do not
+// throw the run away.
+func TestCoordinator_TurnBudgetExhaustedIsRetried(t *testing.T) {
+	runner := &fakeRunner{errs: []error{errors.New("subagent: turn budget (16) exhausted without a final answer")}, outputs: []string{"", "ИТОГ"}}
+	c := NewCoordinator(runner, "m", "r", "", 100000)
+	c.SetTools("norm_search")
+
+	got, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if got.Report != "ИТОГ" {
+		t.Fatalf("report = %q", got.Report)
+	}
+}
+
+// Without tools there is nothing to retry: an empty answer stays an error.
+func TestCoordinator_EmptyWithoutToolsStaysAnError(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"", "поздно"}}
+	c := NewCoordinator(runner, "m", "r", "", 100000)
+	if _, err := c.Review(context.Background(), []Digest{{Path: "/d/a.pdf", Text: "t"}}); err == nil {
+		t.Fatal("want an error when the model returns nothing and no tools were in play")
+	}
+	if len(runner.cfgs) != 1 {
+		t.Fatalf("no retry expected, got %d calls", len(runner.cfgs))
+	}
+}
+
+// The reduce pass runs on the cheap model and must keep the modest output
+// budget: raising it to the coordinator's own budget made a real run spend
+// ten minutes per group and die on the HTTP timeout.
+func TestCoordinator_ReducePassKeepsItsOwnTokenBudget(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"сжатая группа", "ОТЧЁТ"}}
+	c := NewCoordinator(runner, "m", "r", "", 200)
+
+	if _, err := c.Review(context.Background(), []Digest{
+		{Path: "/d/a.pdf", Text: strings.Repeat("я", 4000)},
+		{Path: "/d/b.pdf", Text: strings.Repeat("ю", 4000)},
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(runner.cfgs) < 2 {
+		t.Fatalf("want a reduce call and a review call, got %d", len(runner.cfgs))
+	}
+	if runner.cfgs[0].MaxTokens != reduceMaxTokens {
+		t.Errorf("reduce budget = %d, want %d", runner.cfgs[0].MaxTokens, reduceMaxTokens)
+	}
+	last := runner.cfgs[len(runner.cfgs)-1]
+	if last.MaxTokens != coordinatorMaxTokens {
+		t.Errorf("coordinator budget = %d, want %d", last.MaxTokens, coordinatorMaxTokens)
+	}
+	if reduceMaxTokens >= coordinatorMaxTokens {
+		t.Error("the cheap compressor must stay well below the report budget")
+	}
+}
+
+// The program-built blocks (the manifest, the cross-check, the user's question)
+// are small and authoritative. Feeding them to the cheap compressor together
+// with the documents is how a real run lost the key document and then declared
+// read files unread.
+func TestCoordinator_ReduceNeverTouchesProgramBlocks(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{"сжатая группа", "сжатая группа 2", "ОТЧЁТ"}}
+	c := NewCoordinator(runner, "m", "r", "", 200)
+
+	manifest := Digest{Path: ManifestDigestPath, Method: "go", Text: "1. а.pdf — прочитан"}
+	cross := Digest{Path: CollisionsDigestPath, Method: "go", Text: "🔴 Общая площадь"}
+	got, err := c.Review(context.Background(), []Digest{
+		manifest, cross,
+		{Path: "/d/а.pdf", Text: strings.Repeat("я", 4000)},
+		{Path: "/d/б.pdf", Text: strings.Repeat("ю", 4000)},
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	_ = got
+	// The last call is the review itself; its task is the body handed to the model.
+	body := runner.tasks[len(runner.tasks)-1]
+	if !strings.Contains(body, "1. а.pdf — прочитан") {
+		t.Errorf("manifest must reach the coordinator verbatim:\n%s", body)
+	}
+	if !strings.Contains(body, "🔴 Общая площадь") {
+		t.Errorf("cross-check must reach the coordinator verbatim:\n%s", body)
+	}
+	for i, task := range runner.tasks[:len(runner.tasks)-1] {
+		if strings.Contains(task, ManifestDigestPath) || strings.Contains(task, CollisionsDigestPath) {
+			t.Errorf("reduce call %d was fed a program block:\n%s", i, task)
+		}
 	}
 }

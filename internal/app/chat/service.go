@@ -64,18 +64,7 @@ func (s *Service) ProcessMessage(ctx context.Context, req input.ChatRequest) (*i
 		history = nil
 	}
 
-	llmMessages := make([]output.LLMMessage, 0, len(history)+1)
-	llmMessages = append(llmMessages, output.LLMMessage{
-		Role:    entity.RoleSystem,
-		Content: s.systemPrompt,
-	})
-
-	for _, msg := range history {
-		llmMessages = append(llmMessages, output.LLMMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
-	}
+	llmMessages := buildLLMMessages(s.systemPrompt, history)
 
 	// Add memory context
 	if s.memorySvc != nil {
@@ -93,10 +82,16 @@ func (s *Service) ProcessMessage(ctx context.Context, req input.ChatRequest) (*i
 		}
 	}
 
-	// If images present, attach to last user message and use vision model
+	// If images present, attach to last user message and use vision model.
+	// The last entry is not necessarily it: replayed tool traces ride along as
+	// system blocks, and an image pinned to one would never reach the model.
 	if len(req.Images) > 0 {
-		last := &llmMessages[len(llmMessages)-1]
-		last.Images = req.Images
+		for i := len(llmMessages) - 1; i >= 0; i-- {
+			if llmMessages[i].Role == entity.RoleUser {
+				llmMessages[i].Images = req.Images
+				break
+			}
+		}
 	}
 
 	resp, err := s.pipeline.Process(ctx, llmMessages, req.OnProgress)
@@ -105,6 +100,9 @@ func (s *Service) ProcessMessage(ctx context.Context, req input.ChatRequest) (*i
 	}
 
 	assistantMsg := entity.NewMessage(conv.ID, entity.RoleAssistant, resp.Content)
+	// Keep what the tools returned alongside the answer: the next turn then
+	// works from the document itself instead of re-telling this summary.
+	assistantMsg.ToolCalls = resp.ToolTrace
 	if err := s.messageRepo.SaveMessage(ctx, assistantMsg); err != nil {
 		slog.Error("failed to save assistant message", "error", err)
 	}

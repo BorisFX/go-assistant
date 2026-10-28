@@ -15,9 +15,9 @@ type mockTool struct {
 	schema      json.RawMessage
 }
 
-func (t *mockTool) Name() string           { return t.name }
-func (t *mockTool) Description() string    { return t.description }
-func (t *mockTool) Category() string       { return t.category }
+func (t *mockTool) Name() string            { return t.name }
+func (t *mockTool) Description() string     { return t.description }
+func (t *mockTool) Category() string        { return t.category }
 func (t *mockTool) Schema() json.RawMessage { return t.schema }
 func (t *mockTool) Execute(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{"result":"ok"}`), nil

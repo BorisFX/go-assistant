@@ -16,7 +16,7 @@ import (
 )
 
 // headlessReviewTimeout matches the Telegram intent's budget.
-const headlessReviewTimeout = 30 * time.Minute
+const headlessReviewTimeout = 60 * time.Minute
 
 // runHeadlessReview is the --review-dir entry: collect a local directory,
 // run the pipeline, write the report. It is the eval harness's front door —
@@ -50,6 +50,8 @@ func runHeadlessReview(orch *legalreview.Orchestrator, cfg *config.Config, norma
 		Folder:        dir,
 		Files:         files,
 		Report:        report,
+		CrossCheck:    res.CrossCheck,
+		Unverified:    res.Unverified,
 		NormativyHash: legalreview.HashText(normativy),
 		StartedAt:     started,
 		FinishedAt:    time.Now(),
