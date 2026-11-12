@@ -22,13 +22,13 @@ func NewMemoryRepo(db *DB) *MemoryRepo {
 }
 
 func (r *MemoryRepo) Store(ctx context.Context, memory *entity.Memory) error {
-	embStr := formatVector(memory.Embedding)
+	emb := nullableVector(memory.Embedding)
 
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO memories (id, type, content, tags, embedding, source, created_at, expires_at)
 		 VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)`,
 		memory.ID, string(memory.Type), memory.Content,
-		pq.Array(memory.Tags), embStr, memory.Source,
+		pq.Array(memory.Tags), emb, memory.Source,
 		memory.CreatedAt, memory.ExpiresAt,
 	)
 	return err
@@ -200,4 +200,11 @@ func formatVector(v []float32) string {
 		parts[i] = fmt.Sprintf("%f", f)
 	}
 	return "[" + strings.Join(parts, ",") + "]"
+}
+
+func nullableVector(v []float32) sql.NullString {
+	if len(v) == 0 {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: formatVector(v), Valid: true}
 }

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -43,6 +45,7 @@ import (
 	"github.com/olegmatyakubov/go-assistant/internal/port/output"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling"
 	"github.com/olegmatyakubov/go-assistant/internal/tooling/builtin"
+	"github.com/olegmatyakubov/go-assistant/migrations"
 	"github.com/olegmatyakubov/go-assistant/pkg/config"
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/gmail/v1"
@@ -51,6 +54,9 @@ import (
 
 //go:embed all:dashboard_dist
 var dashboardEmbedFS embed.FS
+
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
 const defaultSystemPrompt = `You are a personal AI assistant. Be concise and helpful.
 
@@ -72,6 +78,7 @@ DOCUMENT CHECKS (mandatory, override any other workflow):
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
+	showVersion := flag.Bool("version", false, "print build version and exit")
 	migrateOnly := flag.Bool("migrate", false, "run database migrations and exit")
 	// Headless review: the eval/ops entry point. Runs the same pipeline the
 	// Telegram intent does, over a local directory, and exits.
@@ -84,6 +91,11 @@ func main() {
 	driveMoves := flag.String("drive-moves", "", "apply a plan file of \"<file id>\\t<dest path>\" moves on the shared Drive and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -95,7 +107,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("starting assistant", "mode", cfg.Mode)
+	slog.Info("starting assistant", "mode", cfg.Mode, "version", version)
 
 	// Database
 	db, err := postgres.Connect(cfg.Database.DSN())
@@ -105,7 +117,7 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := db.Migrate("migrations"); err != nil {
+	if err := db.MigrateFS(migrations.FS); err != nil {
 		slog.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
@@ -599,6 +611,7 @@ func main() {
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		APIKey:       cfg.Dashboard.APIKey,
 		Mode:         cfg.Mode,
+		Version:      version,
 		ChatService:  chatService,
 		MessageRepo:  messageRepo,
 		ActivityRepo: activityRepo,
@@ -608,9 +621,13 @@ func main() {
 		MemorySvc:    memorySvc,
 	})
 
+	listenAddr := net.JoinHostPort(cfg.Dashboard.Host, strconv.Itoa(cfg.Dashboard.Port))
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Dashboard.Port),
-		Handler: router,
+		Addr:              listenAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -623,7 +640,11 @@ func main() {
 	go func() {
 		<-sigCh
 		slog.Info("shutdown signal received")
-		httpServer.Close()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("http server shutdown error", "error", err)
+		}
 		cancel()
 	}()
 
@@ -650,7 +671,7 @@ func main() {
 
 	// Start HTTP server
 	go func() {
-		slog.Info("dashboard started", "port", cfg.Dashboard.Port)
+		slog.Info("dashboard started", "addr", listenAddr)
 		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 			slog.Error("http server error", "error", err)
 		}

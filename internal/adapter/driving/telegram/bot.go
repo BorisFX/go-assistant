@@ -155,10 +155,19 @@ func (b *Bot) SetReviewOptions(opts ReviewOptions) {
 }
 
 func (b *Bot) authorize(update tgbotapi.Update) bool {
-	if update.Message == nil {
+	if update.Message == nil || update.Message.From == nil {
 		return false
 	}
 	return b.authorizeUser(update.Message.From.ID)
+}
+
+// authorizeIncoming gates updates before ChatSequencer allocates a per-chat
+// channel and worker goroutine for strangers.
+func (b *Bot) authorizeIncoming(update tgbotapi.Update) bool {
+	if update.CallbackQuery != nil {
+		return update.CallbackQuery.From != nil && b.authorizeUser(update.CallbackQuery.From.ID)
+	}
+	return b.authorize(update)
 }
 
 // authorizeUser is the check itself, shared by messages and button presses: a
@@ -206,6 +215,12 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		for _, update := range updates {
 			offset = update.UpdateID + 1
+			if !b.authorizeIncoming(update) {
+				if update.Message != nil && update.Message.From != nil {
+					slog.Warn("unauthorized access attempt", "user_id", update.Message.From.ID)
+				}
+				continue
+			}
 			b.sequencer.Dispatch(update)
 		}
 	}

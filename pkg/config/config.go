@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -201,8 +204,14 @@ type Database struct {
 }
 
 func (d Database) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		d.User, d.Password, d.Host, d.Port, d.Name)
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(d.User, d.Password),
+		Host:     net.JoinHostPort(d.Host, strconv.Itoa(d.Port)),
+		Path:     d.Name,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String()
 }
 
 type Search struct {
@@ -231,6 +240,7 @@ type Budget struct {
 }
 
 type Dashboard struct {
+	Host   string `yaml:"host"`
 	Port   int    `yaml:"port"`
 	APIKey string `yaml:"api_key"`
 	Domain string `yaml:"domain"`
@@ -374,6 +384,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Budget.AlertThreshold == 0 {
 		c.Budget.AlertThreshold = 0.8
+	}
+	if c.Dashboard.Host == "" {
+		c.Dashboard.Host = "127.0.0.1"
 	}
 	if c.Dashboard.Port == 0 {
 		c.Dashboard.Port = 8080

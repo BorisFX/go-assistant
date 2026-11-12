@@ -35,7 +35,11 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 
 	if !b.authorize(update) {
-		slog.Warn("unauthorized access attempt", "user_id", update.Message.From.ID)
+		var uid int64
+		if update.Message.From != nil {
+			uid = update.Message.From.ID
+		}
+		slog.Warn("unauthorized access attempt", "user_id", uid)
 		return
 	}
 

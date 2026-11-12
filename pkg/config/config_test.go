@@ -102,3 +102,28 @@ google:
 		t.Fatal("expected error when gmail.enabled without impersonate")
 	}
 }
+
+func TestDashboardDefaultsToLoopback(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "mode: server\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Dashboard.Host != "127.0.0.1" {
+		t.Errorf("expected dashboard host 127.0.0.1, got %q", cfg.Dashboard.Host)
+	}
+}
+
+func TestDatabaseDSNEscapesSpecialChars(t *testing.T) {
+	db := config.Database{
+		Host:     "localhost",
+		Port:     5432,
+		Name:     "assistant",
+		User:     "assistant",
+		Password: "p@ss:w/rd#1%2",
+	}
+	got := db.DSN()
+	want := "postgres://assistant:p%40ss%3Aw%2Frd%231%252@localhost:5432/assistant?sslmode=disable"
+	if got != want {
+		t.Errorf("DSN mismatch:\ngot:  %s\nwant: %s", got, want)
+	}
+}

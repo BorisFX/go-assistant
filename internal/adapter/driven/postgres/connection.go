@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -34,6 +34,10 @@ func Connect(dsn string) (*DB, error) {
 }
 
 func (db *DB) Migrate(migrationsDir string) error {
+	return db.MigrateFS(os.DirFS(migrationsDir))
+}
+
+func (db *DB) MigrateFS(migrationsFS fs.FS) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
@@ -44,9 +48,9 @@ func (db *DB) Migrate(migrationsDir string) error {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
 
-	entries, err := os.ReadDir(migrationsDir)
+	entries, err := fs.ReadDir(migrationsFS, ".")
 	if err != nil {
-		return fmt.Errorf("read migrations dir: %w", err)
+		return fmt.Errorf("read migrations fs: %w", err)
 	}
 
 	var files []string
@@ -68,7 +72,7 @@ func (db *DB) Migrate(migrationsDir string) error {
 			continue
 		}
 
-		content, err := os.ReadFile(filepath.Join(migrationsDir, file))
+		content, err := fs.ReadFile(migrationsFS, file)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", file, err)
 		}

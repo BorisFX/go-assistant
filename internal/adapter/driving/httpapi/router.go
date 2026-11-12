@@ -14,6 +14,7 @@ import (
 type RouterDeps struct {
 	APIKey       string
 	Mode         string
+	Version      string
 	ChatService  input.ChatService
 	MessageRepo  output.MessageRepository
 	ActivityRepo output.ActivityRepository
@@ -32,6 +33,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Get("/api/health", HandleHealth(HealthDeps{
 		Mode:      deps.Mode,
+		Version:   deps.Version,
 		ToolCount: len(deps.ToolRegistry.ListTools()),
 	}))
 

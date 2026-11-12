@@ -73,9 +73,10 @@ budget:
   alert_threshold: 0.8
 
 dashboard:
+  host: "127.0.0.1"
   port: 8080
   api_key: ${DASHBOARD_KEY}
-  domain: "assistant.khmertech.dev"
+  domain: ""
 
 code:
   binary: "claude"
