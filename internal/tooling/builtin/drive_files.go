@@ -16,6 +16,7 @@ import (
 type DriveClient interface {
 	List(ctx context.Context, folderID string) ([]gworkspace.FileInfo, error)
 	Search(ctx context.Context, text string) ([]gworkspace.FileInfo, error)
+	SearchContent(ctx context.Context, text string) ([]gworkspace.FileInfo, error)
 	Download(ctx context.Context, fileID string) ([]byte, error)
 	Upload(ctx context.Context, parentID, name, mimeType string, content []byte) (gworkspace.FileInfo, error)
 	EnsureFolder(ctx context.Context, parentID, name string) (gworkspace.FileInfo, error)
@@ -46,7 +47,7 @@ func NewDriveFiles(client DriveClient, filesDir string) *DriveFiles {
 func (d *DriveFiles) Name() string { return "drive_files" }
 
 func (d *DriveFiles) Description() string {
-	return "Google Drive project workspace: list, search, read, download, upload, move files, create folders, Google Docs and PDF documents (create_pdf — use it for anything sent to a counterparty: ТЗ, КП, письма-приложения), and import a folder from Mail.ru Cloud"
+	return "Google Drive project workspace: list, search by name (search) or by content (search_content — use it to find which document contains a phrase), read, download, upload, move files, create folders, Google Docs and PDF documents (create_pdf — use it for anything sent to a counterparty: ТЗ, КП, письма-приложения), and import a folder from Mail.ru Cloud"
 }
 
 func (d *DriveFiles) Category() string { return "files" }
@@ -57,12 +58,12 @@ func (d *DriveFiles) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["list", "search", "read", "download", "upload", "mkdir", "move", "create_doc", "create_pdf", "import_cloud"],
+				"enum": ["list", "search", "search_content", "read", "download", "upload", "mkdir", "move", "create_doc", "create_pdf", "import_cloud"],
 				"description": "Operation to perform"
 			},
 			"path": {"type": "string", "description": "Folder path from the drive root, e.g. Vertex/03_Техпланы. Empty means the root. For move it is the destination folder"},
 			"file_id": {"type": "string", "description": "Drive file id, for read, download and move"},
-			"query": {"type": "string", "description": "Text matched against file names, for search"},
+			"query": {"type": "string", "description": "For search: text matched against file names. For search_content: a phrase matched against file CONTENTS (preferred for finding which document contains a phrase)"},
 			"name": {"type": "string", "description": "File or folder name, for upload, mkdir and download"},
 			"content": {"type": "string", "description": "Text content, for upload, create_doc and create_pdf. For create_pdf simple markdown is supported: headings (#), lists, **bold** and |tables|"},
 			"cloud_path": {"type": "string", "description": "For import_cloud: either a folder path in the bot's own Mail.ru Cloud, or a public share link like https://cloud.mail.ru/public/XXXX/YYYY. The whole folder is carried over with its subfolders. With a share link, path may be omitted — the folder is named after the shared folder"}
@@ -92,6 +93,8 @@ func (d *DriveFiles) Execute(ctx context.Context, params json.RawMessage) (json.
 		return d.list(ctx, p.Path)
 	case "search":
 		return d.search(ctx, p.Query)
+	case "search_content":
+		return d.searchContent(ctx, p.Query)
 	case "read":
 		return d.read(ctx, p.FileID)
 	case "download":
@@ -131,6 +134,17 @@ func (d *DriveFiles) search(ctx context.Context, query string) (json.RawMessage,
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"query": query, "files": files})
+}
+
+// searchContent finds files whose CONTENT matches the query, not just the name.
+// A miss here does not mean the phrase is absent: scanned PDFs without a text
+// layer are not in Drive's index — fall back to download + pdftotext for those.
+func (d *DriveFiles) searchContent(ctx context.Context, query string) (json.RawMessage, error) {
+	files, err := d.client.SearchContent(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"query": query, "matched": "content", "files": files})
 }
 
 // maxInlineRead caps what goes straight into the conversation. Larger documents

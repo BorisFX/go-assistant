@@ -35,6 +35,10 @@ func (f *fakeDrive) Search(ctx context.Context, text string) ([]gworkspace.FileI
 	return f.files, nil
 }
 
+func (f *fakeDrive) SearchContent(ctx context.Context, text string) ([]gworkspace.FileInfo, error) {
+	return f.files, nil
+}
+
 func (f *fakeDrive) Download(ctx context.Context, fileID string) ([]byte, error) {
 	return f.content, nil
 }

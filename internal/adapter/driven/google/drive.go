@@ -115,6 +115,17 @@ func (d *Drive) Search(ctx context.Context, text string) ([]FileInfo, error) {
 	return d.list(ctx, fmt.Sprintf("name contains '%s' and trashed = false", escapeQuery(text)))
 }
 
+// SearchContent matches the query against file CONTENT (Drive full-text index)
+// instead of names: one API call finds which PDF/doc holds a phrase, replacing
+// the download-then-grep grind. Text PDFs and Google Docs are indexed by Drive;
+// scanned images without a text layer are not.
+func (d *Drive) SearchContent(ctx context.Context, text string) ([]FileInfo, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("drive search content: empty query")
+	}
+	return d.list(ctx, fmt.Sprintf("fullText contains '%s' and trashed = false", escapeQuery(text)))
+}
+
 // googleNativePrefix marks formats that exist only inside Google and therefore
 // have no bytes to download; they must be exported to a real format instead.
 const googleNativePrefix = "application/vnd.google-apps."

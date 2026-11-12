@@ -137,6 +137,24 @@ func TestDriveSearchRejectsEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestDriveSearchContentQueriesFullText(t *testing.T) {
+	stub := newDriveStub(t, `{"files":[]}`)
+	d := newTestDrive(t, stub)
+	if _, err := d.SearchContent(context.Background(), "экранами из профилированного листа"); err != nil {
+		t.Fatalf("search content: %v", err)
+	}
+	if got := stub.lastQuery().Get("q"); !strings.Contains(got, `fullText contains 'экранами из профилированного листа'`) {
+		t.Errorf("query must target fullText, got %q", got)
+	}
+}
+
+func TestDriveSearchContentRejectsEmptyQuery(t *testing.T) {
+	stub := newDriveStub(t, `{"files":[]}`)
+	if _, err := newTestDrive(t, stub).SearchContent(context.Background(), "  "); err == nil {
+		t.Fatal("expected an error for an empty search query")
+	}
+}
+
 // Scaffolding re-runs after partial failures, so an existing folder must be
 // reused rather than duplicated.
 func TestDriveEnsureFolderReusesExisting(t *testing.T) {

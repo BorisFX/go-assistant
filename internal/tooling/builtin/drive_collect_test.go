@@ -33,6 +33,9 @@ func (d *treeDrive) Search(ctx context.Context, text string) ([]gworkspace.FileI
 	}
 	return out, nil
 }
+func (d *treeDrive) SearchContent(ctx context.Context, text string) ([]gworkspace.FileInfo, error) {
+	return d.Search(ctx, text)
+}
 func (d *treeDrive) Download(ctx context.Context, fileID string) ([]byte, error) {
 	if fileID == d.failOn {
 		return nil, errors.New("boom")

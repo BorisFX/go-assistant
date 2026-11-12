@@ -33,6 +33,9 @@ func (d *importDrive) List(ctx context.Context, folderID string) ([]gworkspace.F
 func (d *importDrive) Search(ctx context.Context, text string) ([]gworkspace.FileInfo, error) {
 	return nil, nil
 }
+func (d *importDrive) SearchContent(ctx context.Context, text string) ([]gworkspace.FileInfo, error) {
+	return nil, nil
+}
 func (d *importDrive) Download(ctx context.Context, fileID string) ([]byte, error) {
 	return nil, nil
 }
