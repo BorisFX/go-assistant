@@ -16,6 +16,7 @@ import (
 
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/a6image"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/a6video"
+	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/azurespeech"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
 	// Aliased: the package name would otherwise clash with the Google SDK's own
@@ -135,6 +136,13 @@ func main() {
 		orKey = cfg.LLM.Chat.APIKey
 	}
 	orClient := openrouter.New(orKey, visionModel, "", cfg.LLM.Vision.BaseURL)
+
+	// Voice uses Azure when configured; otherwise keep the OpenRouter STT path.
+	var sttClient output.SpeechTranscriber = openrouter.NewSTTClient(orKey)
+	if cfg.AzureSpeech.Enabled() {
+		sttClient = azurespeech.New(cfg.AzureSpeech.Key, cfg.AzureSpeech.Region, cfg.AzureSpeech.Language)
+		slog.Info("Azure Speech STT enabled", "region", cfg.AzureSpeech.Region, "language", cfg.AzureSpeech.Language)
+	}
 
 	// Wrap LLM clients with circuit breakers for graceful degradation.
 	var (
@@ -437,7 +445,7 @@ func main() {
 		chatService,
 		tradingClient,
 		codeExecutor,
-		openrouter.NewSTTClient(orKey),
+		sttClient,
 		memorySvc,
 		cronScheduler,
 	)

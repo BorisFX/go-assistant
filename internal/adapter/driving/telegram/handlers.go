@@ -171,7 +171,7 @@ func (b *Bot) handleVoiceMessage(msg *tgbotapi.Message) {
 		return
 	}
 
-	// Transcribe via OpenRouter Whisper API
+	// Transcribe via the configured STT provider (Azure Speech or OpenRouter).
 	if b.sttClient == nil {
 		stream.Finalize("Speech-to-text not configured")
 		return

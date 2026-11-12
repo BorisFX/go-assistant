@@ -10,7 +10,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/claudecode"
 	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/cryptoai"
-	"github.com/olegmatyakubov/go-assistant/internal/adapter/driven/openrouter"
 	"github.com/olegmatyakubov/go-assistant/internal/app/cron"
 	"github.com/olegmatyakubov/go-assistant/internal/app/legalreview"
 	"github.com/olegmatyakubov/go-assistant/internal/app/memory"
@@ -65,7 +64,7 @@ type Bot struct {
 	chatService   input.ChatService
 	tradingClient *cryptoai.Client
 	codeExecutor  *claudecode.Executor
-	sttClient     *openrouter.STTClient
+	sttClient     output.SpeechTranscriber
 	memorySvc     *memory.Service
 	cronScheduler *cron.Scheduler
 	sequencer     *ChatSequencer
@@ -100,7 +99,7 @@ func NewBot(
 	chatService input.ChatService,
 	tradingClient *cryptoai.Client,
 	codeExecutor *claudecode.Executor,
-	sttClient *openrouter.STTClient,
+	sttClient output.SpeechTranscriber,
 	memorySvc *memory.Service,
 	cronScheduler *cron.Scheduler,
 ) (*Bot, error) {

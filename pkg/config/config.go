@@ -12,6 +12,7 @@ type Config struct {
 	Mode         string       `yaml:"mode"` // "server" or "local"
 	Telegram     Telegram     `yaml:"telegram"`
 	LLM          LLM          `yaml:"llm"`
+	AzureSpeech  AzureSpeech  `yaml:"azure_speech"`
 	Database     Database     `yaml:"database"`
 	Search       Search       `yaml:"search"`
 	Trading      Trading      `yaml:"trading"`
@@ -180,6 +181,16 @@ type LLMModel struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 }
+
+// AzureSpeech enables Azure STT for voice messages. Empty Key/Region keeps
+// the previous OpenRouter transcription path, including on the Yuri instance.
+type AzureSpeech struct {
+	Key      string `yaml:"key"`
+	Region   string `yaml:"region"`
+	Language string `yaml:"language"`
+}
+
+func (s AzureSpeech) Enabled() bool { return s.Key != "" && s.Region != "" }
 
 type Database struct {
 	Host     string `yaml:"host"`
