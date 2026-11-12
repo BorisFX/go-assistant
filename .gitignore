@@ -15,5 +15,6 @@ vendor/
 .DS_Store
 dashboard/node_modules/
 dashboard/dist/
-assistant
+cmd/assistant/dashboard_dist/
+/assistant
 .claude/worktrees/
